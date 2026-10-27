@@ -19,6 +19,7 @@ from continuous_beam import (
     Node, Override, Settings, Span, combination, design_all, helper_load, min_depth, read_workbook,
 )
 from beam_design import LOAD_PRESETS, TONF_TO_KN, preset_factors
+from beam_canvas import MULTI, PRESETS, beam_editor, build_preset, input_figure
 from continuous_beam_report import build_report
 
 st.set_page_config(page_title="ออกแบบคานต่อเนื่อง", page_icon="📐", layout="wide")
@@ -74,9 +75,25 @@ def load_state(settings: Settings, spans, nodes, loads, overrides, project=None,
     for f, k in SET_KEYS.items():
         v = getattr(settings, f)
         ss[k] = int(v) if f in ("stir", "db", "legs") else v   # selectbox options are ints
-    ss.cb_spans = spans_df(spans)
+    # full-span uniform loads go into the span table (DL / LL per span); the rest stay in the load table
+    full = {}
+    rest = []
+    for ld in loads:
+        L_ = spans[ld.span - 1].L if 1 <= ld.span <= len(spans) else 0
+        if (ld.kind.upper() == "UDL" and (ld.w2 is None or ld.w2 == ld.w1) and not ld.a
+                and (ld.b is None or abs(ld.b - L_) < 1e-9)):
+            full[(ld.span, ld.case.upper())] = full.get((ld.span, ld.case.upper()), 0.0) + ld.w1
+        else:
+            rest.append(ld)
+    u = TONF_TO_KN if ss.get("cb_unit") == "kN" else 1.0
+    sp_df = spans_df(spans)
+    for (i, case), w in full.items():
+        if 1 <= i <= len(spans):
+            sp_df.at[i - 1, f"{case} (/m)"] = w * u
+    ss.cb_spans = sp_df
     ss.cb_nodes = nodes_df(nodes)
-    ss.cb_loads = loads_df(loads)
+    ss.cb_loads = loads_df([Load(l.span, l.case, l.kind, l.w1 * u, None if l.w2 is None else l.w2 * u, l.a, l.b)
+                            for l in rest])
     ss.cb_ov = dict(overrides)
     ss.cb_helper = pd.DataFrame(helper or [
         dict(item="พื้น DL (หนา 12 cm + SDL 150)", kind="สองทาง-ด้านสั้น (wS/3)", S=4.0, L=5.0, w=438.0),
@@ -104,6 +121,9 @@ def table_editor(name: str, base, key: str, **kw) -> pd.DataFrame:
 
 
 ss.setdefault("cb_unit", "t")
+ss.setdefault("cb_preset", "continuous")
+ss.setdefault("cb_preset_n", 2)
+ss.setdefault("cb_input_mode", "คลิกแล้วกรอกด้านล่าง")
 if "cb_spans" not in ss:
     load_state(Settings(), EXAMPLE_SPANS, EXAMPLE_NODES, EXAMPLE_LOADS, EXAMPLE_OVERRIDES,
                dict(project="ตัวอย่าง: บ้านพักอาศัย 2 ชั้น", member="B1", date=str(date.today().year)))
@@ -194,116 +214,335 @@ st.title("📐 ออกแบบคานต่อเนื่อง ค.ส.�
 st.caption("วิเคราะห์ Direct Stiffness (เสาคิด stiffness 4EI/H) • Pattern LL • ออกแบบทุกช่วง 3 ตำแหน่ง "
            "• หน่วย ตัน-เมตร / ksc / cm • จากไฟล์ Beam_Design_Singly_Doubly.xlsm")
 
+# --------------------------------------------------------------------------
+# Graphical input (SUTStructor style): presets, click-to-edit, popup editor
+# --------------------------------------------------------------------------
+LOAD_COLS = ["ช่วงที่", "กรณี", "ชนิด", "w1 / P", "w2", "a (m)", "b (m)", "หมายเหตุ"]
+NODE_NUM = ["c (cm)", "เสาล่าง b", "เสาล่าง h", "เสาล่าง H (m)", "เสาบน b", "เสาบน h", "เสาบน H (m)"]
+
+
+def _clean(v):
+    return None if v is None or (isinstance(v, float) and math.isnan(v)) else v
+
+
+def cur(name: str) -> pd.DataFrame:
+    """Latest version of a table (edits included)."""
+    return ss.get(f"cb_{name}_saved", ss[f"cb_{name}"]).copy().reset_index(drop=True)
+
+
+def commit(spans=None, nodes=None, loads=None):
+    for name, df in (("spans", spans), ("nodes", nodes), ("loads", loads)):
+        if df is not None:
+            ss[f"cb_{name}"] = df.reset_index(drop=True)
+            ss.pop(f"cb_{name}_saved", None)
+    ss.cb_ver += 1
+
+
+def cur_nodes(n_nodes: int) -> pd.DataFrame:
+    nd = cur("nodes")
+    if len(nd) < n_nodes:
+        nd = pd.concat([nd, nodes_df([Node("Pin")] * (n_nodes - len(nd)))], ignore_index=True)
+    return nd.head(n_nodes)
+
+
+def apply_preset():
+    sp_rows, nodes_, simple = build_preset(ss.cb_preset, ss.cb_preset_n)
+    spans_ = pd.DataFrame([{"ชื่อคาน": r["name"], "L (m)": r["L"], "b (cm)": r["b"], "h (cm)": r["h"],
+                            "DL (/m)": None, "LL (/m)": None} for r in sp_rows]
+                          ).astype({"DL (/m)": float, "LL (/m)": float})
+    commit(spans=spans_, nodes=nodes_df(nodes_), loads=loads_df([]))
+    ss.cb_allsimple = simple
+    ss.cb_ov = {}
+    ss.cb_sel = ("span", 1)
+
+
+def add_span():
+    sp, ld = cur("spans"), cur("loads")
+    nd = cur_nodes(len(sp) + 1)
+    right_free = len(nd) and nd.iloc[-1]["ชนิด"] == "Free" and len(sp) >= 2
+    k = len(sp) - 1 if right_free else len(sp)          # 0-based position of the new span
+    tmpl = sp.iloc[max(0, k - 1)].copy() if len(sp) else pd.Series(
+        {"ชื่อคาน": "B1", "L (m)": 4.0, "b (cm)": 25.0, "h (cm)": 50.0})
+    tmpl["DL (/m)"], tmpl["LL (/m)"] = None, None
+    if right_free or (len(sp) == 1 and nd.iloc[-1]["ชนิด"] == "Free"):
+        tmpl["L (m)"] = 4.0
+    sp = pd.concat([sp.iloc[:k], tmpl.to_frame().T, sp.iloc[k:]], ignore_index=True)
+    sp = sp.astype({"L (m)": float, "b (cm)": float, "h (cm)": float, "DL (/m)": float, "LL (/m)": float})
+    new_node = nodes_df([Node("Pin")])
+    pos = len(nd) - 1 if right_free else len(nd)
+    nd = pd.concat([nd.iloc[:pos], new_node, nd.iloc[pos:]], ignore_index=True)
+    if len(ld):
+        ld["ช่วงที่"] = [int(v) + 1 if int(v) > k else int(v) for v in ld["ช่วงที่"]]
+    commit(spans=sp, nodes=nd, loads=ld)
+
+
+def remove_last_span():
+    sp, ld = cur("spans"), cur("loads")
+    if len(sp) <= 1:
+        return
+    nd = cur_nodes(len(sp) + 1)
+    commit(spans=sp.iloc[:-1], nodes=nd.iloc[:-1], loads=ld[[int(v) < len(sp) for v in ld["ช่วงที่"]]]
+           if len(ld) else ld)
+    if ss.get("cb_sel") and ss.cb_sel[1] > len(sp) - (0 if ss.cb_sel[0] == "node" else 1):
+        ss.cb_sel = ("span", 1)
+
+
+def update_span(i: int, vals: dict, extra: list[dict]):
+    sp, ld = cur("spans"), cur("loads")
+    for col, key in (("ชื่อคาน", "name"), ("L (m)", "L"), ("b (cm)", "b"), ("h (cm)", "h"),
+                     ("DL (/m)", "DL"), ("LL (/m)", "LL")):
+        if key in vals and (vals[key] is not None or key in ("DL", "LL")):
+            sp.at[i - 1, col] = vals[key]
+    keep = ld[[int(v) != i for v in ld["ช่วงที่"]]] if len(ld) else ld
+    new = pd.DataFrame([{"ช่วงที่": i, "กรณี": e.get("case") or "DL",
+                         "ชนิด": "Point" if e.get("kind") == "Point" else "UDL",
+                         "w1 / P": e.get("w1"), "w2": e.get("w2"), "a (m)": e.get("a"), "b (m)": e.get("b"),
+                         "หมายเหตุ": ""} for e in extra if e.get("w1") is not None], columns=LOAD_COLS)
+    ld = pd.concat([keep, new], ignore_index=True) if len(new) else keep
+    ld = ld.astype({"w1 / P": float, "w2": float, "a (m)": float, "b (m)": float})
+    commit(spans=sp, loads=ld)
+
+
+def update_node(j: int, n_nodes: int, v: dict):
+    nd = cur_nodes(n_nodes)
+    nd.at[j - 1, "ชนิด"] = v["kind"]
+    for col, key in zip(NODE_NUM, ("c", "lb", "lh", "lH", "ub", "uh", "uH")):
+        nd.at[j - 1, col] = v.get(key) if v.get(key) else None
+    nd.at[j - 1, "ต่อเนื่อง"] = bool(v.get("cont", True))
+    commit(nodes=nd.astype({c: float for c in NODE_NUM}))
+
+
+def draw_input(spans, sp_ed, nodes, ld_ed):
+    nS_ = len(spans)
+    rows = [dict(name=str(r["ชื่อคาน"] or "B1"), L=float(r["L (m)"]), b=float(r["b (cm)"]), h=float(r["h (cm)"]),
+                 DL=_clean(r.get("DL (/m)")), LL=_clean(r.get("LL (/m)"))) for _, r in sp_ed.iterrows()]
+    extra = [dict(span=int(r["ช่วงที่"]), case=str(r["กรณี"] or "DL"), kind=str(r["ชนิด"] or "UDL"),
+                  w1=_clean(r["w1 / P"]), w2=_clean(r["w2"]), a=_clean(r["a (m)"]), b=_clean(r["b (m)"]))
+             for _, r in ld_ed.dropna(subset=["ช่วงที่", "w1 / P"]).iterrows()]
+
+    st.markdown("#### 3. รูปแบบคาน และน้ำหนักบรรทุก")
+    c1, c2, c3 = st.columns([3, 1.3, 2])
+    c1.selectbox("รูปแบบคาน", list(PRESETS), format_func=PRESETS.get, key="cb_preset")
+    c2.number_input("จำนวนช่วง", 1, MAXS, step=1, key="cb_preset_n", disabled=ss.cb_preset not in MULTI,
+                    help="ไม่นับช่วงคานยื่น")
+    c3.button("🏗️ สร้างรูปคานใหม่", on_click=apply_preset, width="stretch",
+              help="สร้างช่วงคานและจุดรองรับตามรูปแบบที่เลือก (ล้างน้ำหนักเดิม)")
+    c1, c2, c3, c4 = st.columns([1.3, 1.3, 2.2, 3.2])
+    c1.button("➕ เพิ่มช่วง", on_click=add_span, width="stretch", disabled=nS_ >= MAXS)
+    c2.button("➖ ลบช่วงสุดท้าย", on_click=remove_last_span, width="stretch", disabled=nS_ <= 1)
+    c3.checkbox("คานเดี่ยวทุกช่วง", key="cb_allsimple", help="ไม่ต่อเนื่องที่จุดรองรับ (คานเดี่ยวต่อกัน)")
+    mode = c4.radio("วิธีกรอก", ["คลิกแล้วกรอกด้านล่าง", "กรอกบนรูป (ป๊อปอัป)"], key="cb_input_mode",
+                    horizontal=True, label_visibility="collapsed")
+    if not nS_:
+        st.info("ยังไม่มีช่วงคาน — เลือกรูปแบบคานแล้วกด 'สร้างรูปคานใหม่'")
+        return
+
+    if mode.startswith("กรอกบนรูป"):
+        data = dict(spans=rows, nodes=[dict(kind=n.kind, c=n.c or None, lb=n.lower[0] or None, lh=n.lower[1] or None,
+                                            lH=n.lower[2] or None, ub=n.upper[0] or None, uh=n.upper[1] or None,
+                                            uH=n.upper[2] or None, cont=n.continuous) for n in nodes],
+                    extra=extra, wu=wu_u, fu=fu, allSimple=bool(ss.cb_allsimple))
+        val = beam_editor(data, key=f"cb_popup_{ss.cb_ver}")
+        if val and val.get("nonce") != ss.get("_cb_nonce"):
+            ss._cb_nonce = val["nonce"]
+            if val["type"] == "span":
+                update_span(int(val["index"]), val["span"], val.get("extra") or [])
+            else:
+                update_node(int(val["index"]), nS_ + 1, val["node"])
+            st.rerun()
+        return
+
+    sel = ss.get("cb_sel") or ("span", 1)
+    if (sel[0] == "span" and sel[1] > nS_) or (sel[0] == "node" and sel[1] > nS_ + 1):
+        sel = ("span", 1)
+    fig, targets = input_figure(rows, nodes, extra, wu_u, fu, sel, bool(ss.cb_allsimple))
+    ev = st.plotly_chart(fig, on_select="rerun", selection_mode="points", key=f"cb_canvas_{ss.cb_ver}",
+                         config={"displayModeBar": False}, width="stretch")
+    pts = (ev or {}).get("selection", {}).get("points", []) if isinstance(ev, dict) else ev.selection.points
+    if pts:
+        p = pts[0]
+        cn = p.get("curve_number")
+        tgt = targets[cn] if cn is not None and cn < len(targets) else None
+        tok = (ss.cb_ver, cn, p.get("point_index"))
+        if tgt and tok != ss.get("_cb_click"):
+            ss._cb_click = tok
+            ss.cb_sel = tgt
+            st.rerun()
+    opts = [("span", i) for i in range(1, nS_ + 1)] + [("node", j) for j in range(1, nS_ + 2)]
+    pick = st.selectbox("แก้ไข (คลิกบนรูป หรือเลือกที่นี่)", opts, index=opts.index(sel),
+                        format_func=lambda t: f"ช่วงที่ {t[1]}" if t[0] == "span" else f"จุดรองรับที่ {t[1]}")
+    if pick != sel:
+        ss.cb_sel = pick
+        st.rerun()
+
+    if sel[0] == "span":
+        i = sel[1]
+        r = rows[i - 1]
+        with st.form(f"cb_span_form_{ss.cb_ver}_{i}", border=True):
+            st.markdown(f"**ช่วงที่ {i}**")
+            c = st.columns(6)
+            name = c[0].text_input("ชื่อคาน", r["name"])
+            L = c[1].number_input("L (m)", 0.1, 50.0, float(r["L"]), step=0.1)
+            b = c[2].number_input("b (cm)", 10.0, 300.0, float(r["b"]), step=5.0)
+            h = c[3].number_input("h (cm)", 10.0, 300.0, float(r["h"]), step=5.0)
+            DL = c[4].number_input(f"DL ({wu_u})", 0.0, 1e5, float(r["DL"] or 0.0), step=0.1,
+                                   help="น้ำหนักบรรทุกคงที่แผ่เต็มช่วง (ไม่รวมน้ำหนักคาน)")
+            LL = c[5].number_input(f"LL ({wu_u})", 0.0, 1e5, float(r["LL"] or 0.0), step=0.1)
+            st.caption(f"น้ำหนักอื่นในช่วงนี้ — แรงจุด P ({fu}) หรือแผ่บางส่วน/สามเหลี่ยม/คางหมู ({wu_u}); "
+                       "a, b วัดจากปลายซ้ายของช่วง (m)")
+            ex = pd.DataFrame([{"กรณี": e["case"], "ชนิด": e["kind"], "w1 / P": e["w1"], "w2": e["w2"],
+                                "a (m)": e["a"], "b (m)": e["b"]} for e in extra if e["span"] == i],
+                              columns=["กรณี", "ชนิด", "w1 / P", "w2", "a (m)", "b (m)"]
+                              ).astype({"w1 / P": float, "w2": float, "a (m)": float, "b (m)": float})
+            ex_ed = st.data_editor(ex, num_rows="dynamic", hide_index=True, width="stretch",
+                                   key=f"cb_span_ex_{ss.cb_ver}_{i}", column_config={
+                                       "กรณี": st.column_config.SelectboxColumn(options=["DL", "LL"], default="DL"),
+                                       "ชนิด": st.column_config.SelectboxColumn(options=["Point", "UDL"],
+                                                                                default="Point"),
+                                       "w2": st.column_config.NumberColumn(help="ว่าง = w1"),
+                                       "b (m)": st.column_config.NumberColumn(help="ว่าง = L")})
+            if st.form_submit_button("💾 บันทึกช่วงนี้", type="primary"):
+                update_span(i, dict(name=name, L=L, b=b, h=h, DL=DL or None, LL=LL or None),
+                            [dict(case=e["กรณี"], kind=e["ชนิด"], w1=_clean(e["w1 / P"]), w2=_clean(e["w2"]),
+                                  a=_clean(e["a (m)"]), b=_clean(e["b (m)"])) for _, e in ex_ed.iterrows()])
+                st.rerun()
+    else:
+        j = sel[1]
+        n = nodes[j - 1]
+        with st.form(f"cb_node_form_{ss.cb_ver}_{j}", border=True):
+            st.markdown(f"**จุดรองรับที่ {j}**")
+            c = st.columns([1.4, 1, 1, 1, 1, 1, 1, 1])
+            kind = c[0].selectbox("ชนิด", SUPPORT_TYPES, index=SUPPORT_TYPES.index(n.kind))
+            cc = c[1].number_input("c (cm)", 0.0, 300.0, float(n.c or 0.0), step=5.0, help="กว้างเสาตามแนวคาน")
+            lb = c[2].number_input("เสาล่าง b", 0.0, 300.0, float(n.lower[0] or 0.0), step=5.0)
+            lh = c[3].number_input("เสาล่าง h", 0.0, 300.0, float(n.lower[1] or 0.0), step=5.0)
+            lH = c[4].number_input("เสาล่าง H (m)", 0.0, 20.0, float(n.lower[2] or 0.0), step=0.1)
+            ub = c[5].number_input("เสาบน b", 0.0, 300.0, float(n.upper[0] or 0.0), step=5.0)
+            uh = c[6].number_input("เสาบน h", 0.0, 300.0, float(n.upper[1] or 0.0), step=5.0)
+            uH = c[7].number_input("เสาบน H (m)", 0.0, 20.0, float(n.upper[2] or 0.0), step=0.1)
+            cont = st.checkbox("ต่อเนื่องผ่านจุดนี้ (ไม่ติ๊ก = ตัดโมเมนต์ เป็นคานเดี่ยวต่อกัน)", n.continuous)
+            st.caption("Pin = หมุนได้ • Fixed = ยึดแน่น • Free = ปลายอิสระ (คานยื่น) • "
+                       "Column = คิด stiffness เสาบน-ล่าง 4EI/H (ไม่ใส่ขนาดเสา = Pin)")
+            if st.form_submit_button("💾 บันทึกจุดรองรับ", type="primary"):
+                update_node(j, nS_ + 1, dict(kind=kind, c=cc, lb=lb, lh=lh, lH=lH, ub=ub, uh=uh, uH=uH, cont=cont))
+                st.rerun()
+
+
 tabs = st.tabs(["📥 INPUT", "📊 ANALYSIS", "🔩 DESIGN", "📄 OUTPUT", "❓ HELP"])
 
 with tabs[0]:
-    st.markdown("#### 3. รูปแบบคาน : ช่วงคาน (ซ้าย → ขวา) และ จุดรองรับ")
-    st.checkbox("คานเดี่ยวทุกช่วง (ไม่ต่อเนื่องที่จุดรองรับ)", key="cb_allsimple")
-    c1, c2 = st.columns([3, 5])
-    with c1:
-        st.caption(f"ช่วงคาน — เพิ่ม/ลบแถวได้ (1–10 ช่วง) • DL, LL = น้ำหนักแผ่เต็มช่วง ({wu_u}) "
-                   "กรอกรายช่วงได้เลย (เพิ่มเติมจากตารางน้ำหนักข้อ 4)")
-        sp_ed = table_editor(
-            "spans", ss.cb_spans, f"cb_spans_ed_{ver}", num_rows="dynamic", hide_index=True, width="stretch",
-            column_config={
-                "ชื่อคาน": st.column_config.TextColumn(default="B1"),
-                "L (m)": st.column_config.NumberColumn(help="ศก.เสา – ศก.เสา", min_value=0.1, format="%.2f"),
-                "b (cm)": st.column_config.NumberColumn(min_value=10.0, format="%.0f"),
-                "h (cm)": st.column_config.NumberColumn(min_value=10.0, format="%.0f"),
-                "DL (/m)": st.column_config.NumberColumn(f"DL ({wu_u})", format="%.2f",
-                                                         help="น้ำหนักบรรทุกคงที่แผ่เต็มช่วง (ไม่รวมน้ำหนักคาน)"),
-                "LL (/m)": st.column_config.NumberColumn(f"LL ({wu_u})", format="%.2f",
-                                                         help="น้ำหนักบรรทุกจรแผ่เต็มช่วง"),
-            })
-    sp_ed = sp_ed.dropna(subset=["L (m)", "b (cm)", "h (cm)"]).head(MAXS)
-    spans = [Span(float(r["L (m)"]), float(r["b (cm)"]), float(r["h (cm)"]), str(r["ชื่อคาน"] or "B1"))
-             for _, r in sp_ed.iterrows()]
-    span_loads = []
-    for i, (_, r) in enumerate(sp_ed.iterrows(), 1):
-        for case, col in (("DL", "DL (/m)"), ("LL", "LL (/m)")):
-            v = r.get(col)
-            if v is not None and not (isinstance(v, float) and math.isnan(v)) and v != 0:
-                span_loads.append(Load(i, case, "UDL", float(v) / U))
-    nS = len(spans)
-    with c2:
-        st.caption(f"จุดรองรับ — ต้องมี {nS + 1} จุด (จุดที่ 1 ถึง {nS + 1})")
-        def nd_base():
-            base = ss.get("cb_nodes_saved", ss.cb_nodes).reset_index(drop=True)
-            if len(base) < nS + 1:
-                base = pd.concat([base, nodes_df([Node("Pin")] * (nS + 1 - len(base)))], ignore_index=True)
-            base = base.head(nS + 1).copy()
-            base.index = [f"จุด {i + 1}" for i in range(len(base))]
-            return base
-        nd_ed = table_editor(
-            "nodes", nd_base, f"cb_nodes_ed_{ver}_{nS}", width="stretch",
-            column_config={
-                "ชนิด": st.column_config.SelectboxColumn(options=SUPPORT_TYPES, required=True),
-                "c (cm)": st.column_config.NumberColumn(help="ความกว้างเสาตามแนวคาน", format="%.0f"),
-                "ต่อเนื่อง": st.column_config.CheckboxColumn(help="ไม่ติ๊ก = ตัดโมเมนต์ที่จุดนี้ (คานเดี่ยวต่อกัน)"),
-            })
-    nn = lambda v: 0.0 if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
-    nodes = [Node(str(r["ชนิด"] or "Pin"), nn(r["c (cm)"]),
-                  (nn(r["เสาล่าง b"]), nn(r["เสาล่าง h"]), nn(r["เสาล่าง H (m)"])),
-                  (nn(r["เสาบน b"]), nn(r["เสาบน h"]), nn(r["เสาบน H (m)"])),
-                  bool(r["ต่อเนื่อง"]) if r["ต่อเนื่อง"] is not None else True)
-             for _, r in nd_ed.iterrows()]
-    st.caption("Pin = รองรับแนวดิ่ง หมุนได้ • Fixed = ยึดแน่น • Free = ปลายอิสระ (คานยื่น) • "
-               "Column = ต่อกับเสา คิด stiffness เสาบน-ล่าง (4EI/H) • c = กว้างเสา ใช้หาโมเมนต์ลบที่ผิวเสา "
-               "และแรงเฉือนที่ระยะ d")
+    draw_area = st.container()        # filled after the tables below are read
+    with st.expander("📋 ข้อมูลละเอียดแบบตาราง (แบบ Excel) — ช่วงคาน จุดรองรับ น้ำหนัก และตัวช่วยแปลงน้ำหนัก",
+                     expanded=False):
+        st.markdown("#### 3. ช่วงคาน (ซ้าย → ขวา) และ จุดรองรับ")
+        c1, c2 = st.columns([3, 5])
+        with c1:
+            st.caption(f"ช่วงคาน — เพิ่ม/ลบแถวได้ (1–10 ช่วง) • DL, LL = น้ำหนักแผ่เต็มช่วง ({wu_u}) "
+                       "กรอกรายช่วงได้เลย (เพิ่มเติมจากตารางน้ำหนักข้อ 4)")
+            sp_ed = table_editor(
+                "spans", ss.cb_spans, f"cb_spans_ed_{ver}", num_rows="dynamic", hide_index=True, width="stretch",
+                column_config={
+                    "ชื่อคาน": st.column_config.TextColumn(default="B1"),
+                    "L (m)": st.column_config.NumberColumn(help="ศก.เสา – ศก.เสา", min_value=0.1, format="%.2f"),
+                    "b (cm)": st.column_config.NumberColumn(min_value=10.0, format="%.0f"),
+                    "h (cm)": st.column_config.NumberColumn(min_value=10.0, format="%.0f"),
+                    "DL (/m)": st.column_config.NumberColumn(f"DL ({wu_u})", format="%.2f",
+                                                             help="น้ำหนักบรรทุกคงที่แผ่เต็มช่วง (ไม่รวมน้ำหนักคาน)"),
+                    "LL (/m)": st.column_config.NumberColumn(f"LL ({wu_u})", format="%.2f",
+                                                             help="น้ำหนักบรรทุกจรแผ่เต็มช่วง"),
+                })
+        sp_ed = sp_ed.dropna(subset=["L (m)", "b (cm)", "h (cm)"]).head(MAXS)
+        spans = [Span(float(r["L (m)"]), float(r["b (cm)"]), float(r["h (cm)"]), str(r["ชื่อคาน"] or "B1"))
+                 for _, r in sp_ed.iterrows()]
+        span_loads = []
+        for i, (_, r) in enumerate(sp_ed.iterrows(), 1):
+            for case, col in (("DL", "DL (/m)"), ("LL", "LL (/m)")):
+                v = r.get(col)
+                if v is not None and not (isinstance(v, float) and math.isnan(v)) and v != 0:
+                    span_loads.append(Load(i, case, "UDL", float(v) / U))
+        nS = len(spans)
+        with c2:
+            st.caption(f"จุดรองรับ — ต้องมี {nS + 1} จุด (จุดที่ 1 ถึง {nS + 1})")
+            def nd_base():
+                base = ss.get("cb_nodes_saved", ss.cb_nodes).reset_index(drop=True)
+                if len(base) < nS + 1:
+                    base = pd.concat([base, nodes_df([Node("Pin")] * (nS + 1 - len(base)))], ignore_index=True)
+                base = base.head(nS + 1).copy()
+                base.index = [f"จุด {i + 1}" for i in range(len(base))]
+                return base
+            nd_ed = table_editor(
+                "nodes", nd_base, f"cb_nodes_ed_{ver}_{nS}", width="stretch",
+                column_config={
+                    "ชนิด": st.column_config.SelectboxColumn(options=SUPPORT_TYPES, required=True),
+                    "c (cm)": st.column_config.NumberColumn(help="ความกว้างเสาตามแนวคาน", format="%.0f"),
+                    "ต่อเนื่อง": st.column_config.CheckboxColumn(help="ไม่ติ๊ก = ตัดโมเมนต์ที่จุดนี้ (คานเดี่ยวต่อกัน)"),
+                })
+        nn = lambda v: 0.0 if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
+        nodes = [Node(str(r["ชนิด"] or "Pin"), nn(r["c (cm)"]),
+                      (nn(r["เสาล่าง b"]), nn(r["เสาล่าง h"]), nn(r["เสาล่าง H (m)"])),
+                      (nn(r["เสาบน b"]), nn(r["เสาบน h"]), nn(r["เสาบน H (m)"])),
+                      bool(r["ต่อเนื่อง"]) if r["ต่อเนื่อง"] is not None else True)
+                 for _, r in nd_ed.iterrows()]
+        st.caption("Pin = รองรับแนวดิ่ง หมุนได้ • Fixed = ยึดแน่น • Free = ปลายอิสระ (คานยื่น) • "
+                   "Column = ต่อกับเสา คิด stiffness เสาบน-ล่าง (4EI/H) • c = กว้างเสา ใช้หาโมเมนต์ลบที่ผิวเสา "
+                   "และแรงเฉือนที่ระยะ d")
 
-    if spans and len(nodes) == nS + 1:
-        rows = []
-        for i, s in enumerate(spans, 1):
-            md = min_depth(sett, nodes, i, nS, s)
-            rows.append({"ช่วง": i, "ประเภท": md["kind"],
-                         "นน.คาน (t/m)": round(sett.gc * s.b / 100 * s.h / 100, 3) if sett.self_weight else None,
-                         "hmin (cm)": round(md["hmin"], 1), "h ≥ hmin": "OK" if md["ok"] else "ตรวจการแอ่นตัว",
-                         "b/h": round(s.b / s.h, 2)})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        if spans and len(nodes) == nS + 1:
+            rows = []
+            for i, s in enumerate(spans, 1):
+                md = min_depth(sett, nodes, i, nS, s)
+                rows.append({"ช่วง": i, "ประเภท": md["kind"],
+                             "นน.คาน (t/m)": round(sett.gc * s.b / 100 * s.h / 100, 3) if sett.self_weight else None,
+                             "hmin (cm)": round(md["hmin"], 1), "h ≥ hmin": "OK" if md["ok"] else "ตรวจการแอ่นตัว",
+                             "b/h": round(s.b / s.h, 2)})
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
-    st.markdown(f"#### 4. น้ำหนักบรรทุกเพิ่มเติม ({fu}, เมตร) — น้ำหนักลง = ค่าบวก")
-    c1, c2 = st.columns([3, 2])
-    with c1:
-        ld_ed = table_editor(
-            "loads", ss.cb_loads, f"cb_loads_ed_{ver}", num_rows="dynamic", hide_index=True, width="stretch",
-            column_config={
-                "ช่วงที่": st.column_config.NumberColumn(min_value=1, max_value=MAXS, step=1, required=True),
-                "กรณี": st.column_config.SelectboxColumn(options=["DL", "LL"], required=True, default="DL"),
-                "ชนิด": st.column_config.SelectboxColumn(options=["UDL", "Point"], required=True, default="UDL"),
-                "w1 / P": st.column_config.NumberColumn(help=f"{wu_u} หรือ P ({fu})", format="%.3f"),
-                "w2": st.column_config.NumberColumn(help=f"{wu_u} (ว่าง = w1) — w1≠w2 = สามเหลี่ยม/คางหมู",
-                                                    format="%.3f"),
-                "a (m)": st.column_config.NumberColumn(help="จากปลายซ้ายของช่วง (Point: ตำแหน่งแรง)",
-                                                       format="%.2f"),
-                "b (m)": st.column_config.NumberColumn(help="ปลายน้ำหนักแผ่ (ว่าง = L)", format="%.2f"),
-            })
-        st.caption("UDL: เว้น a, b = เต็มช่วง | w1≠w2 = สามเหลี่ยม/คางหมู | Point: a = ตำแหน่งจากปลายซ้าย")
-    with c2:
-        st.caption("ตัวช่วย: แปลงน้ำหนักพื้น/ผนัง (kg/m²) เป็นน้ำหนักแผ่บนคาน (t/m)")
-        hp = table_editor(
-            "helper", ss.cb_helper, f"cb_helper_ed_{ver}", num_rows="dynamic", hide_index=True, width="stretch",
-            column_config={
-                "item": st.column_config.TextColumn("รายการ"),
-                "kind": st.column_config.SelectboxColumn("รูปแบบ", options=HELPER_KINDS),
-                "S": st.column_config.NumberColumn("S / สูง (m)", format="%.2f"),
-                "L": st.column_config.NumberColumn("L ยาว (m)", format="%.2f"),
-                "w": st.column_config.NumberColumn("w (kg/m²)", format="%.0f"),
-            })
-        hp_out = hp.copy()
-        hp_out[f"ลงคาน ({wu_u})"] = [
-            (lambda v: round(v * U, 3) if v is not None else None)(
-                helper_load(r["kind"], nn(r["S"]) or None, nn(r["L"]) or None, nn(r["w"]) or None))
-            for _, r in hp.iterrows()]
-        st.dataframe(hp_out[["item", f"ลงคาน ({wu_u})"]].rename(columns={"item": "รายการ"}),
-                     hide_index=True, width="stretch")
-        st.caption("สองทาง-ด้านยาว: w·S/3·(3−m²)/2, m = S/L • สองทาง-ด้านสั้น: w·S/3")
+        st.markdown(f"#### 4. น้ำหนักบรรทุกเพิ่มเติม ({fu}, เมตร) — น้ำหนักลง = ค่าบวก")
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            ld_ed = table_editor(
+                "loads", ss.cb_loads, f"cb_loads_ed_{ver}", num_rows="dynamic", hide_index=True, width="stretch",
+                column_config={
+                    "ช่วงที่": st.column_config.NumberColumn(min_value=1, max_value=MAXS, step=1, required=True),
+                    "กรณี": st.column_config.SelectboxColumn(options=["DL", "LL"], required=True, default="DL"),
+                    "ชนิด": st.column_config.SelectboxColumn(options=["UDL", "Point"], required=True, default="UDL"),
+                    "w1 / P": st.column_config.NumberColumn(help=f"{wu_u} หรือ P ({fu})", format="%.3f"),
+                    "w2": st.column_config.NumberColumn(help=f"{wu_u} (ว่าง = w1) — w1≠w2 = สามเหลี่ยม/คางหมู",
+                                                        format="%.3f"),
+                    "a (m)": st.column_config.NumberColumn(help="จากปลายซ้ายของช่วง (Point: ตำแหน่งแรง)",
+                                                           format="%.2f"),
+                    "b (m)": st.column_config.NumberColumn(help="ปลายน้ำหนักแผ่ (ว่าง = L)", format="%.2f"),
+                })
+            st.caption("UDL: เว้น a, b = เต็มช่วง | w1≠w2 = สามเหลี่ยม/คางหมู | Point: a = ตำแหน่งจากปลายซ้าย")
+        with c2:
+            st.caption("ตัวช่วย: แปลงน้ำหนักพื้น/ผนัง (kg/m²) เป็นน้ำหนักแผ่บนคาน (t/m)")
+            hp = table_editor(
+                "helper", ss.cb_helper, f"cb_helper_ed_{ver}", num_rows="dynamic", hide_index=True, width="stretch",
+                column_config={
+                    "item": st.column_config.TextColumn("รายการ"),
+                    "kind": st.column_config.SelectboxColumn("รูปแบบ", options=HELPER_KINDS),
+                    "S": st.column_config.NumberColumn("S / สูง (m)", format="%.2f"),
+                    "L": st.column_config.NumberColumn("L ยาว (m)", format="%.2f"),
+                    "w": st.column_config.NumberColumn("w (kg/m²)", format="%.0f"),
+                })
+            hp_out = hp.copy()
+            hp_out[f"ลงคาน ({wu_u})"] = [
+                (lambda v: round(v * U, 3) if v is not None else None)(
+                    helper_load(r["kind"], nn(r["S"]) or None, nn(r["L"]) or None, nn(r["w"]) or None))
+                for _, r in hp.iterrows()]
+            st.dataframe(hp_out[["item", f"ลงคาน ({wu_u})"]].rename(columns={"item": "รายการ"}),
+                         hide_index=True, width="stretch")
+            st.caption("สองทาง-ด้านยาว: w·S/3·(3−m²)/2, m = S/L • สองทาง-ด้านสั้น: w·S/3")
 
-    opt = lambda v: None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
-    to_t = lambda v: None if v is None else v / U
-    loads = span_loads + [
-        Load(int(r["ช่วงที่"]), str(r["กรณี"] or "DL"), str(r["ชนิด"] or "UDL"), float(r["w1 / P"]) / U,
-             to_t(opt(r["w2"])), opt(r["a (m)"]), opt(r["b (m)"]))
-        for _, r in ld_ed.dropna(subset=["ช่วงที่", "w1 / P"]).iterrows()]
+        opt = lambda v: None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
+        to_t = lambda v: None if v is None else v / U
+        loads = span_loads + [
+            Load(int(r["ช่วงที่"]), str(r["กรณี"] or "DL"), str(r["ชนิด"] or "UDL"), float(r["w1 / P"]) / U,
+                 to_t(opt(r["w2"])), opt(r["a (m)"]), opt(r["b (m)"]))
+            for _, r in ld_ed.dropna(subset=["ช่วงที่", "w1 / P"]).iterrows()]
+
+    with draw_area:
+        draw_input(spans, sp_ed, nodes, ld_ed)
 
 # --------------------------------------------------------------------------
 # Analysis
@@ -715,7 +954,11 @@ with tabs[4]:
 1. แถบซ้าย: กรอกวัสดุ เลือกมาตรฐาน (ACI 318-99/วสท. 1.4D+1.7L หรือ ACI 318-19/มยผ. 1.2D+1.6L) และ
    Load combination (ตามมาตรฐาน / 1.4D+1.7L / 1.2D+1.6L / กำหนดเอง), Pattern LL,
    น้ำหนักคานอัตโนมัติ — หรือ **นำเข้าไฟล์ Excel เดิม** (.xlsm) ได้ทันที
-2. แท็บ INPUT ข้อ 3: กรอก L, b, h ของแต่ละช่วงจากซ้ายไปขวา และชนิดจุดรองรับ (จุดที่ 1 ถึง N+1)
+2. แท็บ INPUT: เลือก **รูปแบบคาน** (คานเดี่ยว / ต่อเนื่อง / คานยื่น / ต่อเนื่อง + ยื่น / คานเดี่ยวต่อกัน)
+   แล้วกด "สร้างรูปคานใหม่" — เพิ่ม/ลบช่วงได้ แล้ว **กรอกบนรูปคาน** ได้ 2 แบบ (สลับได้):
+   - คลิกแล้วกรอกด้านล่าง: คลิกช่วงหรือจุดรองรับบนรูป แล้วกรอก L, b, h, DL, LL, แรงจุด ในกล่องใต้รูป
+   - กรอกบนรูป (ป๊อปอัป): คลิกบนรูปแล้วกรอกในกล่องที่เด้งขึ้นบนรูปเลย
+   ตารางแบบ Excel ยังเปิดได้ที่ "ข้อมูลละเอียดแบบตาราง" (แก้ข้อมูลชุดเดียวกัน)
    - คานเดี่ยว: 1 ช่วง จุด 1 = Pin, จุด 2 = Pin • คานยื่นอย่างเดียว: 1 ช่วง จุด 1 = Fixed (หรือ Column), จุด 2 = Free
    - คานต่อเนื่อง: ≥ 2 ช่วง • คานต่อเนื่อง + คานยื่น: ให้จุดปลายเป็น Free
    - คานเดี่ยวหลายตัวต่อกัน: ติ๊ก "คานเดี่ยวทุกช่วง" หรือเอาติ๊ก "ต่อเนื่อง" ออกเฉพาะจุดที่ต้องการตัด
