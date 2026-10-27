@@ -116,7 +116,7 @@ def build_report(st, spans, nodes, summary, reactions, rows, project) -> str:
 <tr><td>{st.fy:,.0f}</td><td>{st.fc:,.0f}</td><td>{st.beta1:.3f}</td><td>{st.phib}</td><td>{st.phiv}</td>
 <td>{st.fys:,.0f}</td><td>{st.Es:,.0f}</td><td>{st.rhob:.5f}</td><td>{st.rhomax:.5f}</td><td>{st.rhomin:.5f}</td>
 <td>{esc(st.code)}</td></tr></table>
-<p class="meta">ระยะหุ้ม {st.cover:g} cm • เหล็กปลอก Ø{st.stir:g} mm {st.legs} ขา • Pattern LL: {'Yes' if st.pattern else 'No'}
+<p class="meta">U = {st.fD:g}DL + {st.fL:g}LL (และตรวจ 1.4DL) • ระยะหุ้ม {st.cover:g} cm • เหล็กปลอก Ø{st.stir:g} mm {st.legs} ขา • Pattern LL: {'Yes' if st.pattern else 'No'}
  • น้ำหนักคานอัตโนมัติ: {'Yes' if st.self_weight else 'No'} • ความเหนียว: {duct}</p>
 <h2>ช่วงคานทั้งหมด (สรุป)</h2>
 <table><tr><th>ช่วง</th><th>b×h</th><th>บน-ซ้าย</th><th>ล่าง-กลาง</th><th>บน-ขวา</th><th>ปลอก ซ้าย</th>

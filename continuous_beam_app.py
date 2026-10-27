@@ -18,6 +18,7 @@ from continuous_beam import (
     HELPER_KINDS, MAXS, POSITIONS, STIRRUP_SIZES, SUPPORT_TYPES, BeamModel, InputError, Load,
     Node, Override, Settings, Span, design_all, helper_load, min_depth, read_workbook,
 )
+from beam_design import LOAD_PRESETS, preset_factors
 from continuous_beam_report import build_report
 
 st.set_page_config(page_title="ออกแบบคานต่อเนื่อง", page_icon="📐", layout="wide")
@@ -65,6 +66,7 @@ def loads_df(loads):
 
 
 def load_state(settings: Settings, spans, nodes, loads, overrides, project=None, helper=None):
+    ss.cb_lc, ss.cb_fD, ss.cb_fL = "code", 1.4, 1.7
     for f, k in SET_KEYS.items():
         v = getattr(settings, f)
         ss[k] = int(v) if f in ("stir", "db", "legs") else v   # selectbox options are ints
@@ -131,7 +133,14 @@ with st.sidebar:
     c1.number_input("fys ปลอก (ksc)", 2000.0, 7000.0, step=100.0, key="cb_fys")
     c2.number_input("Es (ksc)", 1.5e6, 2.5e6, step=10000.0, key="cb_Es", format="%.0f")
     c1.number_input("γc (t/m³)", 1.5, 3.0, step=0.1, key="cb_gc")
-    st.selectbox("มาตรฐาน / Load combination", CODES, key="cb_code")
+    st.selectbox("มาตรฐาน (φ, ρmax)", CODES, key="cb_code")
+    st.selectbox("Load combination", list(LOAD_PRESETS), format_func=LOAD_PRESETS.get, key="cb_lc",
+                 help="ตามมาตรฐาน = ตามตัวเลือกด้านบน (ACI 318-99 → 1.4D+1.7L, ACI 318-19 → 1.2D+1.6L) "
+                      "• ตรวจ 1.4DL เพิ่มเสมอ")
+    if ss.cb_lc == "custom":
+        c1, c2 = st.columns(2)
+        c1.number_input("ตัวคูณ DL", 1.0, 2.0, step=0.05, key="cb_fD")
+        c2.number_input("ตัวคูณ LL", 1.0, 2.5, step=0.05, key="cb_fL")
     c1, c2 = st.columns(2)
     c1.checkbox("คิด Pattern LL", key="cb_pattern")
     c2.checkbox("รวมน้ำหนักคาน", key="cb_sw")
@@ -151,7 +160,8 @@ with st.sidebar:
             st.text_input(labels[k], key=f"cb_pj_{k}")
 
 sett = Settings(**{f: ss[k] for f, k in SET_KEYS.items()})
-sett = Settings(**{**sett.__dict__, "legs": int(sett.legs), "stir": float(sett.stir), "db": float(sett.db)})
+sett = Settings(**{**sett.__dict__, "legs": int(sett.legs), "stir": float(sett.stir), "db": float(sett.db),
+                   "load_factors": preset_factors(ss.cb_lc, (ss.cb_fD, ss.cb_fL))})
 
 # --------------------------------------------------------------------------
 # Header + INPUT tables
@@ -547,7 +557,8 @@ with tabs[3]:
 with tabs[4]:
     st.markdown("""
 **ขั้นตอน**
-1. แถบซ้าย: กรอกวัสดุ เลือกมาตรฐาน (ACI 318-99/วสท. 1.4D+1.7L หรือ ACI 318-19/มยผ. 1.2D+1.6L), Pattern LL,
+1. แถบซ้าย: กรอกวัสดุ เลือกมาตรฐาน (ACI 318-99/วสท. 1.4D+1.7L หรือ ACI 318-19/มยผ. 1.2D+1.6L) และ
+   Load combination (ตามมาตรฐาน / 1.4D+1.7L / 1.2D+1.6L / กำหนดเอง), Pattern LL,
    น้ำหนักคานอัตโนมัติ — หรือ **นำเข้าไฟล์ Excel เดิม** (.xlsm) ได้ทันที
 2. แท็บ INPUT ข้อ 3: กรอก L, b, h ของแต่ละช่วงจากซ้ายไปขวา และชนิดจุดรองรับ (จุดที่ 1 ถึง N+1)
    - คานเดี่ยว: 1 ช่วง จุด 1 = Pin, จุด 2 = Pin • คานยื่นอย่างเดียว: 1 ช่วง จุด 1 = Fixed (หรือ Column), จุด 2 = Free
