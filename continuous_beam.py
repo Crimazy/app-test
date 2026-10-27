@@ -802,3 +802,45 @@ def read_workbook(fp) -> dict:
                 overrides[(span, pos)] = ov
     return dict(settings=st, spans=spans, nodes=nodes, loads=loads, overrides=overrides,
                 project=project, helper=helper)
+
+
+# --------------------------------------------------------------------------
+# Single load combination a·DL + b·LL with LL on all spans (diagram like a
+# hand calculation: loads, reactions, SFD, BMD with values per span)
+# --------------------------------------------------------------------------
+def combination(m: BeamModel, a: float, b: float, ndiv: int = 80) -> dict:
+    """Internal forces for U = a·DL + b·LL (LL on every span), t and t-m."""
+    spans = []
+    for s in range(1, m.nS + 1):
+        L = m.spans[s - 1].L
+        xs = {L * j / ndiv for j in range(ndiv + 1)}
+        for ld in m.loads:                   # show the jumps under point loads
+            if ld.span == s and ld.kind == 2:
+                xs |= {max(0.0, ld.a - 1e-6), min(L, ld.a + 1e-6)}
+        xs = sorted(xs)
+        f = lambda fn, x: a * fn(0, s, x) + b * sum(fn(k, s, x) for k in range(1, m.nS + 1))
+        M = [f(m.M, x) for x in xs]
+        V = [f(m.V, x) for x in xs]
+        imax = max(range(len(M)), key=lambda i: M[i])
+        # loads on this span, scaled by the factors
+        udl = sum((a if ld.case == 0 else b) * ld.w1 for ld in m.loads
+                  if ld.span == s and ld.kind == 1 and ld.w1 == ld.w2 and ld.a <= 1e-9 and ld.b >= L - 1e-9)
+        merged = {}                          # DL + LL at the same place -> one load
+        for ld in m.loads:
+            if ld.span != s or (ld.kind == 1 and ld.w1 == ld.w2 and ld.a <= 1e-9 and ld.b >= L - 1e-9):
+                continue
+            f_ = a if ld.case == 0 else b
+            key = (ld.kind, round(ld.a, 6), round(ld.b, 6))
+            o = merged.setdefault(key, dict(kind="point" if ld.kind == 2 else "dist", w1=0.0, w2=0.0,
+                                            a=ld.a, b=ld.b))
+            o["w1"] += f_ * ld.w1
+            o["w2"] += f_ * ld.w2
+        others = [o for o in merged.values() if abs(o["w1"]) > 1e-12 or abs(o["w2"]) > 1e-12]
+        spans.append(dict(span=s, L=L, X0=m.X0[s - 1], x=xs, M=M, V=V, V_left=V[0], V_right=V[-1],
+                          M_left=M[0], M_right=M[-1], Mmax=M[imax], x_Mmax=xs[imax], udl=udl, others=others))
+    react = []
+    for j in range(1, m.nS + 2):
+        r = a * m._node_sum(m.EV, m.ER, 0, j) + b * sum(m._node_sum(m.EV, m.ER, k, j)
+                                                        for k in range(1, m.nS + 1))
+        react.append(dict(node=j, X=m.X0[j - 1], kind=m.kind[j - 1], R=r))
+    return dict(spans=spans, reactions=react, a=a, b=b)

@@ -127,3 +127,24 @@ def test_load_factor_override_scales_envelope():
         assert a["Mpos_max"] == pytest.approx(b["Mpos_max"]) and a["Vu_left"] == pytest.approx(b["Vu_left"])
     st = Settings(load_factors=(1.2, 1.6))
     assert (st.fD, st.fL, st.phiv) == (1.2, 1.6, 0.85)
+
+
+def test_combination_simple_spans_in_series():
+    """Two simple spans 3.40 m / 4.30 m with W = 7.45 / 8.10 (hand-calculation diagram)."""
+    from continuous_beam import combination
+    st = Settings(self_weight=False, all_simple=True)
+    m = BeamModel(st, [Span(3.4, 20, 40), Span(4.3, 20, 40)], [Node("Pin")] * 3,
+                  [Load(1, "DL", "UDL", 7.45), Load(2, "DL", "UDL", 8.10)])
+    c = combination(m, 1.0, 0.0)
+    s1, s2 = c["spans"]
+    assert s1["Mmax"] == pytest.approx(7.45 * 3.4 ** 2 / 8) and s2["Mmax"] == pytest.approx(8.10 * 4.3 ** 2 / 8)
+    assert s1["V_left"] == pytest.approx(7.45 * 3.4 / 2) and s2["V_right"] == pytest.approx(-8.10 * 4.3 / 2)
+    assert [r["R"] for r in c["reactions"]] == pytest.approx([12.665, 12.665 + 17.415, 17.415])
+    assert s1["udl"] == pytest.approx(7.45) and s1["others"] == []
+
+
+def test_combination_merges_dl_and_ll_point_loads():
+    from continuous_beam import combination
+    m = BeamModel(Settings(), EXAMPLE_SPANS, EXAMPLE_NODES, EXAMPLE_LOADS)
+    pts = combination(m, 1.4, 1.7)["spans"][2]["others"]
+    assert len(pts) == 1 and pts[0]["w1"] == pytest.approx(1.4 * 3.0 + 1.7 * 1.2)
