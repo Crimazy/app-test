@@ -39,7 +39,30 @@ def _location(st, sm, r, neg: bool) -> str:
 <td>{_ok(cap['phiMn'] >= Mu - 1e-4 and cap['ductile'])}</td></tr>"""
 
 
-def build_report(st, spans, nodes, summary, reactions, rows, project) -> str:
+def _items_table(load_items, i, esc) -> str:
+    """Load items of span i: input (formulas kept) and the resulting loads."""
+    rows = [(it, res) for it, res in (load_items or []) if int(it.get("span") or 0) == i]
+    if not rows:
+        return ""
+    def r3(res, f):
+        v = res.get(f)
+        if v is None:
+            return ""
+        return f"{v[0]:.3f}→{v[1]:.3f}" if isinstance(v, tuple) else f"{v:.3f}"
+    body = "".join(
+        f"<tr><td style='text-align:left'>{esc(it.get('name') or '')}</td><td>{esc(it.get('kind'))}</td>"
+        f"<td>{esc(it.get('S'))}{(' × ' + esc(it.get('L'))) if it.get('L') else ''}</td><td>{esc(it.get('t'))}</td>"
+        f"<td>{esc(it.get('DL'))}</td><td>{esc(it.get('LL'))}</td><td>{esc(it.get('WU'))}</td>"
+        f"<td>{esc(it.get('a'))}{('–' + esc(it.get('b'))) if it.get('b') else ''}</td>"
+        f"<td>{r3(res, 'DL')}</td><td>{r3(res, 'LL')}</td><td>{r3(res, 'WU')}</td>"
+        f"<td style='text-align:left'>{esc(res.get('error') or res.get('note') or '')}</td></tr>"
+        for it, res in rows)
+    return f"""<h3>น้ำหนักบรรทุกบนคาน (ไม่รวมน้ำหนักคาน)</h3>
+<table><tr><th>รายการ</th><th>ชนิด</th><th>S × L (m)</th><th>t (cm)</th><th>DL</th><th>LL</th><th>Wu</th><th>a–b (m)</th>
+<th>→ DL</th><th>→ LL</th><th>→ Wu</th><th>หมายเหตุ</th></tr>{body}</table>"""
+
+
+def build_report(st, spans, nodes, summary, reactions, rows, project, load_items=None, unit="t") -> str:
     esc = lambda v: html.escape(str(v or ""))
     nS = len(spans)
     span_html = []
@@ -66,6 +89,7 @@ def build_report(st, spans, nodes, summary, reactions, rows, project) -> str:
  = {md['hmin']:.1f} cm → {_ok(md['ok'], 'OK', 'ตรวจการแอ่นตัว')} •
  M ซ้าย {_f(sm['ML_min'])}/{_f(sm['ML_max'])}, M+ {_f(sm['Mpos_max'])} (x = {sm['Mpos_x']:.2f} m),
  M ขวา {_f(sm['MR_min'])}/{_f(sm['MR_max'])} t-m • Vu {_f(sm['Vu_left'])} / {_f(sm['Vu_mid'])} / {_f(sm['Vu_right'])} t</p>
+{_items_table(load_items, i, esc)}
 <h3>ดัด (kg-m, cm, cm²)</h3>
 <table><tr><th>ตำแหน่ง</th><th>M</th><th>Mu</th><th>d</th><th>φMn1 (ρmax)</th><th>ชนิด</th><th>ρ</th>
 <th>As req</th><th>As' req</th><th>เหล็กรับแรงดึง</th><th>เหล็กรับแรงอัด</th><th>c</th><th>fs'</th><th>εt</th>
