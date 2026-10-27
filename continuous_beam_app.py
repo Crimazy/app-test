@@ -24,8 +24,9 @@ from beam_loads import (
 )
 from beam_design import LOAD_PRESETS, TONF_TO_KN, preset_factors
 from beam_canvas import MULTI, PRESETS, beam_editor, build_preset, input_figure
-from beam_sheet import SheetInput, bar_name, compute as sheet_compute, suggest as sheet_suggest
+from beam_sheet import MODES, Bar, SheetInput, bar_name, bars_text, compute as sheet_compute, suggest as sheet_suggest
 from beam_sheet_report import render_document, render_sheet
+from beam_sheet_xlsx import build_workbook
 from continuous_beam_report import build_report
 
 st.set_page_config(page_title="ออกแบบคานต่อเนื่อง", page_icon="📐", layout="wide")
@@ -131,6 +132,9 @@ ss.setdefault("cb_preset_n", 2)
 ss.setdefault("cb_input_mode", "คลิกแล้วกรอกด้านล่าง")
 ss.setdefault("cb_sh_eq", True)
 ss.setdefault("cb_sheet_ov", {})
+ss.setdefault("cb_sh_rev", 0)
+ss.setdefault("cb_sh_rlim", 2.0)
+ss.setdefault("cb_sh_cmin", 6.0)
 if "cb_spans" not in ss:
     load_state(Settings(), EXAMPLE_SPANS, EXAMPLE_NODES, EXAMPLE_LOADS, EXAMPLE_OVERRIDES,
                dict(project="ตัวอย่าง: บ้านพักอาศัย 2 ชั้น", member="B1", date=str(date.today().year)))
@@ -918,13 +922,36 @@ def sheet_forces() -> dict:
 def sheet_input(key, f, ov=None) -> SheetInput:
     base = SheetInput(fc=sett.fc, fy=sett.fy, fy_rb=sett.fys, Es=sett.Es, Mu=f["Mu"], Vu=f["Vu"],
                       Vu_mid=f["Vu_mid"], span=f["L"], B=f["b"], H=f["h"], cover=sett.cover,
-                      db=float(sett.db), ds=float(sett.stir), legs=int(sett.legs), eq=bool(ss.cb_sh_eq))
+                      db=float(sett.db), ds=float(sett.stir), legs=int(sett.legs), eq=bool(ss.cb_sh_eq),
+                      rho_limit=float(ss.cb_sh_rlim) / 100, clear_min=float(ss.cb_sh_cmin))
     ov = ov if ov is not None else ss.cb_sheet_ov.get(key)
-    if ov:
-        for k_, v_ in ov.items():
-            setattr(base, k_, list(v_) if isinstance(v_, (list, tuple)) else v_)
-        return base
-    return sheet_suggest(base)
+    if not ov:
+        return sheet_suggest(base)
+    for k_, v_ in ov.items():
+        if k_ != "bars":
+            setattr(base, k_, v_)
+    if ov.get("bars") is None:                       # mode / Ø / legs only: suggest the bars for them
+        return sheet_suggest(base)
+    base.bars = [Bar(**b_) for b_ in ov["bars"]]
+    return base
+
+
+def bars_df(inp: SheetInput) -> pd.DataFrame:
+    rows = [{"ด้าน": "ดึง" if b_.side == "t" else "อัด", "ชั้นที่": int(b_.layer), "จำนวน": int(b_.n),
+             "Ø (mm)": int(b_.db)} for b_ in sorted(inp.bars, key=lambda b_: (b_.side != "t", b_.layer))]
+    return pd.DataFrame(rows, columns=["ด้าน", "ชั้นที่", "จำนวน", "Ø (mm)"])
+
+
+def df_bars(df: pd.DataFrame) -> list[dict]:
+    out = []
+    for _, row in df.iterrows():
+        try:
+            n_, d_, k_ = int(row["จำนวน"]), float(row["Ø (mm)"]), int(row["ชั้นที่"])
+        except (TypeError, ValueError):
+            continue
+        if n_ > 0 and d_ > 0 and k_ > 0:
+            out.append(dict(side="c" if row["ด้าน"] == "อัด" else "t", layer=k_, n=n_, db=d_))
+    return out
 
 
 def sheet_head(key, f, page) -> dict:
@@ -941,35 +968,86 @@ with tabs[3]:
     forces = sheet_forces()
     keys = list(forces)
     st.markdown("##### แบบฟอร์มรายการคำนวณคาน — Singly / Doubly ในแผ่นเดียว (ตามฟอร์ม Beam-Singly / Beam-Doubly)")
-    c1, c2, c3 = st.columns([1, 1, 2])
+    c1, c2, c3, c4, c5 = st.columns([0.8, 1, 0.9, 0.9, 2.2])
     sel_s = c1.number_input("ช่วงที่", 1, nS, 1, key="cb_sh_span")
     sel_p = c2.selectbox("ตำแหน่ง", POSITIONS, key="cb_sh_pos")
-    c3.toggle("For EQ — ระยะปลอกในโซน 2H จากหน้าเสา ≤ min(d/4, 8db, 24Ø, 30 cm)", key="cb_sh_eq")
+    c3.number_input("% เหล็กดึงไม่เกิน", 0.5, 4.0, step=0.1, format="%.1f", key="cb_sh_rlim",
+                    help="As(ดึง)/(B·H) — ทุกหน้าตัด")
+    c4.number_input("ช่องว่างเหล็กเมน ≥ (cm)", 2.0, 15.0, step=0.5, format="%.1f", key="cb_sh_cmin",
+                    help="(B − 2·cover − Øปลอก·ขา − ΣnØ)/(n − 1) ของแต่ละชั้น — ใช้ตรวจและใช้แนะนำจำนวนเส้นต่อชั้น")
+    c5.toggle("For EQ — ระยะปลอกในโซน 2H จากหน้าเสา ≤ min(d/4, 8db, 24Ø, 30 cm)", key="cb_sh_eq")
     key = (int(sel_s), sel_p)
     f = forces[key]
     inp_ = sheet_input(key, f)
     res = sheet_compute(inp_)
+    ov_ = ss.cb_sheet_ov.get(key) or {}
 
-    with st.form(f"cb_sheet_form_{key[0]}_{key[1]}_{ss.cb_ver}", border=True):
+    with st.form(f"cb_sheet_form_{key[0]}_{key[1]}_{ss.cb_ver}_{ss.cb_sh_rev}", border=True):
         st.caption(f"Mu = {f['Mu']:,.0f} kg-m ({'M− บนรับแรงดึง' if f['top'] else 'M+ ล่างรับแรงดึง'}) • "
                    f"Vu ที่หน้าเสา = {f['Vu']:,.0f} kg • Vu ที่ระยะ 2H = {f['Vu_mid']:,.0f} kg — จาก envelope ของผลวิเคราะห์ • "
-                   f"{'ค่าที่แก้เอง' if key in ss.cb_sheet_ov else 'ค่าที่โปรแกรมแนะนำ'}")
-        c = st.columns([1.2, 1.2, 1, 1, 1, 1, 1, 0.3, 1, 1, 1])
-        db_ = c[0].selectbox("Ø เหล็กหลัก", SHEET_BARS, index=SHEET_BARS.index(int(inp_.db)) if int(inp_.db) in SHEET_BARS else 1)
-        ds_ = c[1].selectbox("Ø ปลอก", SHEET_STIR, index=SHEET_STIR.index(int(inp_.ds)) if int(inp_.ds) in SHEET_STIR else 1)
-        legs_ = c[2].number_input("ขาปลอก", 2, 6, int(inp_.legs))
-        nt = [c[3 + k].number_input(f"ดึง ชั้น {k + 1}", 0, 12, int(inp_.n_t[k])) for k in range(4)]
-        nc = [c[8 + k].number_input(f"อัด แถว {k + 1}", 0, 12, int(inp_.n_c[k])) for k in range(3)]
-        b1_, b2_ = st.columns([1, 1])
+                   f"{'เหล็กที่กรอกเอง' if ov_.get('bars') is not None else 'เหล็กที่โปรแกรมแนะนำ'}")
+        cl, cr = st.columns([1.15, 1])
+        with cl:
+            m_keys = list(MODES)
+            mode_ = st.radio("ออกแบบเป็น", m_keys, index=m_keys.index(inp_.mode if inp_.mode in MODES else "auto"),
+                             format_func=lambda m: MODES[m] + (f" (ตอนนี้ {res['auto_kind']})" if m == "auto" else ""),
+                             horizontal=True,
+                             help="อัตโนมัติ: Singly เมื่อ ρ ต้องการ ≤ 0.75ρb (และเหล็กที่ใช้จริงตรวจผ่าน) ไม่งั้น Doubly • "
+                                  "เลือก Singly/Doubly เองได้ — แบบไหนไม่ผ่านจะขึ้น NOT O.K. ในแผ่นคำนวณ")
+            k1, k2, k3 = st.columns(3)
+            db_ = k1.selectbox("Ø เหล็กเมน (ที่ใช้แนะนำ)", SHEET_BARS,
+                               index=SHEET_BARS.index(int(inp_.db)) if int(inp_.db) in SHEET_BARS else 1)
+            ds_ = k2.selectbox("Ø ปลอก", SHEET_STIR, index=SHEET_STIR.index(int(inp_.ds)) if int(inp_.ds) in SHEET_STIR else 1)
+            legs_ = k3.number_input("ขาปลอก", 2, 8, int(inp_.legs), help="ปลอกหลายขา (2, 3, 4, … ขา) — Av = ขา × πØ²/4")
+        with cr:
+            st.caption("เหล็กเมน — 1 แถว = 1 กลุ่ม (ด้าน, ชั้นที่, จำนวน, Ø) • ชั้น 1 ชิดผิว • ชั้นเดียวกันใส่หลายขนาดได้ • "
+                       "เพิ่ม/ลบแถวได้ไม่จำกัด")
+            ed_ = st.data_editor(
+                bars_df(inp_), key=f"cb_sh_ed_{key[0]}_{key[1]}_{ss.cb_ver}_{ss.cb_sh_rev}", num_rows="dynamic",
+                hide_index=True, width="stretch",
+                column_config={"ด้าน": st.column_config.SelectboxColumn(options=["ดึง", "อัด"], required=True, default="ดึง"),
+                               "ชั้นที่": st.column_config.NumberColumn(min_value=1, max_value=10, step=1, default=1),
+                               "จำนวน": st.column_config.NumberColumn(min_value=0, max_value=30, step=1, default=2),
+                               "Ø (mm)": st.column_config.SelectboxColumn(options=SHEET_BARS, default=16)})
+        b1_, b2_, b3_ = st.columns(3)
         save = b1_.form_submit_button("💾 ใช้เหล็กตามที่กรอก", type="primary")
-        auto = b2_.form_submit_button("🪄 แนะนำจำนวนเส้นใหม่ (ตาม Ø ที่เลือก)")
-    if save:
-        ss.cb_sheet_ov[key] = dict(db=float(db_), ds=float(ds_), legs=int(legs_), n_t=nt, n_c=nc)
+        auto = b2_.form_submit_button("🪄 ให้โปรแกรมคำนวณเหล็กเบื้องต้น", help="ตามแบบ (Singly/Doubly), Ø เหล็กเมน, ปลอก, ขา ที่เลือก")
+        reset = b3_.form_submit_button("↺ กลับเป็นค่าแนะนำเดิม")
+    if save or auto:
+        ov_new = dict(mode=mode_, db=float(db_), ds=float(ds_), legs=int(legs_))
+        if save:
+            ov_new["bars"] = df_bars(ed_)
+        else:
+            sug = sheet_suggest(sheet_input(key, f, ov=ov_new))
+            ov_new.update(mode=sug.mode, ds=sug.ds, legs=sug.legs,
+                          bars=[dict(side=b_.side, layer=b_.layer, n=b_.n, db=b_.db) for b_ in sug.bars])
+        ss.cb_sheet_ov[key] = ov_new
+        ss.cb_sh_rev += 1
         st.rerun()
-    if auto:
-        sug = sheet_suggest(sheet_input(key, f, ov=dict(db=float(db_), ds=float(ds_), legs=int(legs_))))
-        ss.cb_sheet_ov[key] = dict(db=sug.db, ds=sug.ds, legs=sug.legs, n_t=list(sug.n_t), n_c=list(sug.n_c))
+    if reset:
+        ss.cb_sheet_ov.pop(key, None)
+        ss.cb_sh_rev += 1
         st.rerun()
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("แบบที่ใช้", res["kind"], None if res["kind"] == res["auto_kind"] else f"ตามเกณฑ์: {res['auto_kind']}",
+              delta_color="off")
+    m2.metric("% เหล็กรับแรงดึง", f"{100 * res['pct']:.2f} %", f"{'≤' if res['pct_ok'] else '>'} {ss.cb_sh_rlim:.1f} %",
+              delta_color="normal" if res["pct_ok"] else "inverse")
+    clr_ = [l_["clear"] for l_ in res["layers_t"] + res["layers_c"] if math.isfinite(l_["clear"])]
+    m3.metric("ช่องว่างเหล็กเมนน้อยสุด", f"{min(clr_):.2f} cm" if clr_ else "-",
+              f"{'≥' if res['clear_ok'] else '<'} {ss.cb_sh_cmin:.1f} cm", delta_color="normal" if res["clear_ok"] else "inverse")
+    m4.metric("φMn / Mu", f"{res['phiMn']:,.0f}", f"Mu {inp_.Mu:,.0f} kg-m", delta_color="normal" if res["Mn_ok"] else "inverse")
+    m5.metric("ผลรวม", "ผ่าน" if res["ok"] else "ไม่ผ่าน")
+    with st.expander("ช่องว่างเหล็กเมนแต่ละชั้น", expanded=not res["clear_ok"]):
+        st.dataframe(pd.DataFrame([{"ด้าน": "ดึง" if sd == "t" else "อัด", "ชั้น": l_["layer"], "เหล็ก": l_["txt"],
+                                    "As (cm²)": round(l_["As"], 2), "ระยะถึงผิว y (cm)": round(l_["y"], 2),
+                                    "ช่องว่าง (cm)": round(l_["clear"], 2) if math.isfinite(l_["clear"]) else None,
+                                    "ตรวจ": ("ผ่าน" if l_["clear"] >= inp_.clear_min - 1e-9 else "ไม่ผ่าน")}
+                                   for sd in ("t", "c") for l_ in res[f"layers_{sd}"]]),
+                     hide_index=True, width="stretch")
+        st.caption(f"ช่องว่าง = (B − 2·cover − Øปลอก/10·ขา − ΣnØ/10)/(n − 1) = ({inp_.B:g} − 2×{inp_.cover:g} − "
+                   f"{inp_.ds / 10:g}×{inp_.legs} − ΣnØ)/(n − 1)")
 
     k_idx = keys.index(key) + 1
     page_html = render_document([render_sheet(res, sheet_head(key, f, f"{k_idx}/{len(keys)}"))],
@@ -977,36 +1055,44 @@ with tabs[3]:
     st.iframe(page_html, height=1180)
 
     # all sections
-    all_rows, all_pages = [], []
+    all_rows, all_pages, xl_secs = [], [], []
     for n_, k_ in enumerate(keys, 1):
         r_ = sheet_compute(sheet_input(k_, forces[k_]))
         i_ = r_["inp"]
         all_pages.append(render_sheet(r_, sheet_head(k_, forces[k_], f"{n_}/{len(keys)}")))
+        xl_secs.append((f"S{k_[0]}-{k_[1]}", i_, sheet_head(k_, forces[k_], f"{n_}/{len(keys)}")))
+        clr_ = [l_["clear"] for l_ in r_["layers_t"] + r_["layers_c"] if math.isfinite(l_["clear"])]
         all_rows.append({"ช่วง": k_[0], "ตำแหน่ง": k_[1], "Mu (kg-m)": round(forces[k_]["Mu"]),
                          "ดึง": "บน" if forces[k_]["top"] else "ล่าง", "ชนิด": r_["kind"],
-                         "เหล็กรับแรงดึง": f"{sum(i_.n_t)}-{bar_name(i_.db)}",
-                         "เหล็กรับแรงอัด": f"{sum(i_.n_c)}-{bar_name(i_.db)}",
+                         "เหล็กรับแรงดึง": bars_text(r_["layers_t"]), "เหล็กรับแรงอัด": bars_text(r_["layers_c"]),
+                         "% ดึง": round(100 * r_["pct"], 2), "ช่องว่างน้อยสุด (cm)": round(min(clr_), 2) if clr_ else None,
                          "φMn (kg-m)": round(r_["phiMn"]),
-                         "ปลอก 2H": f"{bar_name(i_.ds)}@{r_['sh_2h']['s']:g}" if r_["sh_2h"]["s"] else "Revised",
-                         "ปลอกกลาง": f"{bar_name(i_.ds)}@{r_['sh_mid']['s']:g}" if r_["sh_mid"]["s"] else "Revised",
-                         "ผล": "ผ่าน" if r_["ok"] else "ไม่ผ่าน", "ที่มา": "แก้เอง" if k_ in ss.cb_sheet_ov else "แนะนำ"})
+                         "ปลอก 2H": f"{i_.legs}ขา {bar_name(i_.ds)}@{r_['sh_2h']['s']:g}" if r_["sh_2h"]["s"] else "Revised",
+                         "ปลอกกลาง": f"{i_.legs}ขา {bar_name(i_.ds)}@{r_['sh_mid']['s']:g}" if r_["sh_mid"]["s"] else "Revised",
+                         "ผล": "ผ่าน" if r_["ok"] else "ไม่ผ่าน",
+                         "ที่มา": "แก้เอง" if (ss.cb_sheet_ov.get(k_) or {}).get("bars") is not None else "แนะนำ"})
     st.markdown("###### สรุปทุกช่วง")
     st.dataframe(pd.DataFrame(all_rows).style.map(
         lambda v: "color:#137333;font-weight:600" if v == "ผ่าน" else (
             "color:#c5221f;font-weight:600" if v in ("ไม่ผ่าน", "Revised") else "")),
         hide_index=True, width="stretch")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4, c5 = st.columns(5)
     member = ss.cb_pj_member or "beam"
+    XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     c1.download_button("⬇️ แผ่นนี้ (HTML, พิมพ์ A4)", page_html, file_name=f"{member}_S{key[0]}_{key[1]}.html",
                        mime="text/html")
     c2.download_button("⬇️ ทุกช่วงทุกตำแหน่ง (HTML, พิมพ์ A4)", render_document(all_pages, member),
                        file_name=f"{member}_design_sheets.html", mime="text/html", type="primary")
-    if ss.cb_sheet_ov and c3.button("↺ ล้างค่าที่แก้เองทั้งหมด"):
+    c3.download_button("📗 แผ่นนี้ (Excel มีสูตร)", lambda: build_workbook([xl_secs[k_idx - 1]]),
+                       file_name=f"{member}_S{key[0]}_{key[1]}.xlsx", mime=XLSX)
+    c4.download_button("📗 ทุกช่วง (Excel มีสูตร)", lambda: build_workbook(xl_secs),
+                       file_name=f"{member}_design_sheets.xlsx", mime=XLSX, type="primary")
+    if ss.cb_sheet_ov and c5.button("↺ ล้างค่าที่แก้เองทั้งหมด"):
         ss.cb_sheet_ov = {}
         st.rerun()
     st.caption("หน่วยตามแบบฟอร์ม: kg, kg-m, cm, ksc • φ ดัด 0.90 (Singly: φ ตาม εt 0.70–0.90), φ เฉือน 0.85 • "
                "Singly เมื่อ ρ ≤ 0.75ρb, Doubly เมื่อ ρ > 0.75ρb (ρ1 = 0.5ρb, f′s จากเหล็กที่ใช้) • "
-               "ระยะห่างระหว่างชั้นเหล็ก 3 cm • ปลอก RB ใช้ fy ของเหล็กปลอก (แถบซ้าย), DB ใช้ fy เหล็กหลัก • "
+               "ระยะห่างระหว่างชั้นเหล็ก 3 cm • % เหล็กดึง = As/(B·H) • ไฟล์ Excel: ทุกค่าเป็นสูตร แก้ช่องสีฟ้าแล้วคำนวณใหม่ได้ • ปลอก RB ใช้ fy ของเหล็กปลอก (แถบซ้าย), DB ใช้ fy เหล็กหลัก • "
                "เปิดไฟล์ HTML แล้วสั่งพิมพ์ (Ctrl+P) เป็น PDF ได้")
 
 
@@ -1143,7 +1229,10 @@ with tabs[5]:
 5. แท็บ DESIGN: ออกแบบทุกช่วง 3 ตำแหน่ง เลือก Singly/Doubly อัตโนมัติ — แก้ Ø เหล็ก/จำนวนชั้น/จำนวนเส้น/
    เหล็กปลอก ได้ใน "ช่องสีเหลือง"
 6. แท็บ DESIGN SHEET: ออกแบบเหล็กจริงทีละหน้าตัดตามแบบฟอร์ม Beam-Singly / Beam-Doubly (Mu, Vu จากผลวิเคราะห์)
-   — โปรแกรมแนะนำเหล็กให้ แก้จำนวนเส้น/ขนาด/ชั้น/ปลอกได้ • ดาวน์โหลดแบบฟอร์มเพื่อส่งงาน (HTML → พิมพ์ PDF)
+   — เลือก อัตโนมัติ/Singly/Doubly ได้ • กรอกเหล็กเมนเป็นตาราง (ด้าน, ชั้นที่, จำนวน, Ø) ได้ตามต้องการ หรือกด
+   "ให้โปรแกรมคำนวณเหล็กเบื้องต้น" • เหล็กปลอกเลือก Ø และจำนวนขาได้ • ตรวจ % เหล็กดึง As/(B·H) ≤ 2 % และ
+   ช่องว่างเหล็กเมน (B − 2·cover − Øปลอก·ขา − ΣnØ)/(n − 1) ≥ 6 cm • ดาวน์โหลดแบบฟอร์ม (HTML → พิมพ์ PDF)
+   หรือ Excel ที่ทุกค่าเป็นสูตร
    • ใส่ชื่อผู้คำนวณ/ผู้ตรวจ และโลโก้บริษัทได้ที่ "ข้อมูลโครงการ" แถบซ้าย
 7. แท็บ OUTPUT: รายการคำนวณรายตำแหน่ง และดาวน์โหลดรายการคำนวณทุกช่วงเป็น HTML (สั่งพิมพ์ A4)
 

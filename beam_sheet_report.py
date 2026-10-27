@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 import math
 
-from beam_sheet import bar_name
+from beam_sheet import bar_name, bars_text
 
 CSS = """
 @page { size: A4; margin: 10mm; }
@@ -56,14 +56,24 @@ def _ok(flag: bool, ok="O.K.", ng="NOT O.K.") -> str:
     return f'<span class="ok">{ok}</span>' if flag else f'<span class="ng">{ng}</span>'
 
 
-def _bar_rows(rows, area_rows, db, req, label) -> str:
+def _bar_rows(layers, req, label, clear_min, n_show) -> str:
+    """One line per layer: Using n DB.. (As = ..) and the clear distance between its bars."""
     out = []
-    for k, (n, a) in enumerate(zip(rows, area_rows)):
+    tot = sum(l["As"] for l in layers)
+    rows = layers + [None] * max(0, n_show - len(layers))
+    for k, l in enumerate(rows):
+        if l is None:
+            out.append(f"<tr><td class='bl'>{label if k == 0 else ''}</td><td class='bx l'>Using</td><td class='bx in'>-</td>"
+                       "<td class='bx'></td><td class='bx'></td><td class='bx'>mm</td><td class='bx'>( As =</td>"
+                       "<td class='bx'>-</td><td class='bx r'>cm² )</td><td></td><td></td></tr>")
+            continue
+        clr = "" if not math.isfinite(l["clear"]) else (
+            f"ช่องว่าง {_n(l['clear'])} cm " + _ok(l["clear"] >= clear_min - 1e-9, "≥ " + _n(clear_min, 1), "&lt; " + _n(clear_min, 1)))
         out.append(
-            f"<tr><td class='bl'>{label if k == 0 else ''}</td><td class='bx l'>Using</td><td class='bx in'>{n}</td>"
-            f"<td class='bx'>{'DB' if db > 9 else 'RB'}</td><td class='bx in'>{db:g}</td><td class='bx'>mm</td>"
-            f"<td class='bx'>( As =</td><td class='bx in'>{_n(a)}</td><td class='bx r'>cm² )</td>"
-            f"<td>{_ok(sum(area_rows) >= req - 1e-9)}</td></tr>")
+            f"<tr><td class='bl'>{label if k == 0 else ''}</td><td class='bx l'>ชั้น {l['layer']}</td>"
+            f"<td class='bx in'>{html.escape(l['txt'])}</td><td class='bx'></td><td class='bx'></td><td class='bx'></td>"
+            f"<td class='bx'>( As =</td><td class='bx in'>{_n(l['As'])}</td><td class='bx r'>cm² )</td>"
+            f"<td>{_ok(tot >= req - 1e-9) if k == 0 else ''}</td><td class='note'>{clr}</td></tr>")
     return "<tr><td colspan='6' style='padding:0'><table class='bars'>" + "".join(out) + "</table></td></tr>"
 
 
@@ -75,6 +85,10 @@ def _row(left=None, right=None, cls="") -> str:
         eq, val, unit = (list(h) + ["", "", ""])[:3]
         return f"<td class='eq'>{eq}</td><td class='v'>{val}</td><td class='u'>{unit}</td>"
     return f"<tr class='{cls}'>{half(left)}{half(right)}</tr>"
+
+
+def _wide(eq, val, mark) -> str:
+    return f"<tr><td class='eq' colspan='4'>{eq}</td><td class='v'>{val}</td><td class='u'>{mark}</td></tr>"
 
 
 def _title(text, cls="sub") -> str:
@@ -120,7 +134,9 @@ def render_sheet(r: dict, head: dict) -> str:
     ]
     if not doubly:
         rows += [
-            _title(f"Solution &nbsp; <span class='sub'>1.) Assume</span> {kind}", "sec"),
+            _title(f"Solution &nbsp; <span class='sub'>1.) Assume</span> {kind}"
+                   + (f" &nbsp;<span class='note'>เลือกออกแบบเป็น Singly (ρ ต้องการ = {_n(r['rho_req'], 4)}"
+                      f" &gt; ρ<sub>max</sub> = {_n(r['rho_max'], 4)})</span>" if r['chosen'] else ""), "sec"),
             _row((f"ρ<sub>b</sub> = 0.85β<sub>1</sub>({fc}/{fy})·0.003/(0.003 + {fy}/E<sub>s</sub>) =", _n(r['rho_b'], 4), ""),
                  ("→ ρ = 0.5ρ<sub>b</sub> =", _n(r['rho_half'], 4), "")),
             _row(None, ("ρ<sub>max</sub> = 0.75ρ<sub>b</sub> =", _n(r['rho_max'], 4), "")),
@@ -144,8 +160,8 @@ def render_sheet(r: dict, head: dict) -> str:
                   f" • ρ ≤ ρ<sub>max</sub> = {_n(r['rho_max'], 4)}</span>", "", ""), None),
         ]
     else:
-        why = (f"ρ ต้องการ = {_n(r['rho_req'], 4)} ≤ ρ<sub>max</sub> แต่เหล็กที่ต้องใช้จริงตรวจแบบ Singly ไม่ผ่าน → Doubly"
-               if r.get("forced") else f"ρ ต้องการ = {_n(r['rho_req'], 4)} &gt; ρ<sub>max</sub> = {_n(r['rho_max'], 4)}")
+        why = (f"ρ ต้องการ = {_n(r['rho_req'], 4)} ≤ ρ<sub>max</sub> — เลือกออกแบบเป็น Doubly"
+               if r['rho_req'] <= r['rho_max'] else f"ρ ต้องการ = {_n(r['rho_req'], 4)} &gt; ρ<sub>max</sub> = {_n(r['rho_max'], 4)}")
         rows += [
             _title(f"Solution &nbsp; {kind} &nbsp;<span class='note'>{why}</span>", "sec"),
             _row((f"ρ<sub>b</sub> = 0.85β<sub>1</sub>({fc}/{fy})·0.003/(0.003 + {fy}/E<sub>s</sub>) =", _n(r['rho_b'], 4), ""),
@@ -169,12 +185,12 @@ def render_sheet(r: dict, head: dict) -> str:
             _row((f"<span class='note'>ρ − ρ′f′<sub>s</sub>/{fy} ≤ 0.75ρ<sub>b</sub> = {_n(r['rho_max'], 4)}</span>", "", ""), None),
         ]
     # rows shown as in the forms: Singly 3 + 2, Doubly 4 + 3 (more when used)
-    nt_show = max(4 if doubly else 3, max((k + 1 for k, n in enumerate(inp.n_t) if n), default=0))
-    nc_show = max(3 if doubly else 2, max((k + 1 for k, n in enumerate(inp.n_c) if n), default=0))
-    rows += [_bar_rows(inp.n_t[:nt_show], r['As_rows'][:nt_show], inp.db, r['As_req'], 'Tension Steel :'),
-             _bar_rows(inp.n_c[:nc_show], r['Asc_rows'][:nc_show], inp.db, r['Asc_req'], 'Compression Steel :'),
-             _row((f"<span class='note'>วางได้ {r['per_layer']} เส้น/ชั้น"
-                   + ("" if r['fit_ok'] else " — " + _ok(False, ng="วางไม่พอ: เพิ่มชั้น/ขนาด/ความกว้าง")) + "</span>", "", ""), None)]
+    rows += [_bar_rows(r['layers_t'], r['As_req'], 'Tension Steel :', inp.clear_min, 4 if doubly else 3),
+             _bar_rows(r['layers_c'], r['Asc_req'], 'Compression Steel :', inp.clear_min, 3 if doubly else 2),
+             _wide(f"% เหล็กรับแรงดึง = A<sub>s</sub>/(B·H) = {_n(r['As'])}/({_n(inp.B, 0)}×{_n(inp.H, 0)}) "
+                   f"≤ {_n(100 * inp.rho_limit, 1)} % →", _n(100 * r['pct']) + " %", _ok(r['pct_ok'])),
+             _wide(f"ช่องว่างเหล็กเมนน้อยสุด = (B − 2·cover − Ø<sub>ปลอก</sub>·ขา − ΣnØ)/(n − 1) "
+                   f"≥ {_n(inp.clear_min, 1)} cm →", _n(min((l['clear'] for l in r['layers_t'] + r['layers_c'] if math.isfinite(l['clear'])), default=None)) + " cm", _ok(r['clear_ok']))]
     rows += check
     rows += [
         _title("Shear Reinforcement", "sec"),
@@ -183,8 +199,8 @@ def render_sheet(r: dict, head: dict) -> str:
         _row(("A<sub>v</sub> =", _n(r['Av'], 3), "cm²"), ("Leg =", f"<span class='in'>{inp.legs}</span>", "")),
         _shear(r['sh_2h'], "Distance of 2H from Support"),
         _shear(r['sh_mid'], "Midspan"),
-        f"<tr><td colspan='6' class='note' style='padding-top:6px'>สรุป: เหล็กรับแรงดึง {sum(inp.n_t)}-{bar_name(inp.db)} • "
-        f"เหล็กรับแรงอัด {sum(inp.n_c)}-{bar_name(inp.db)} • ปลอก {bar_name(inp.ds)} @ "
+        f"<tr><td colspan='6' class='note' style='padding-top:6px'>สรุป: เหล็กรับแรงดึง {bars_text(r['layers_t'])} • "
+        f"เหล็กรับแรงอัด {bars_text(r['layers_c'])} • ปลอก {inp.legs} ขา {bar_name(inp.ds)} @ "
         f"{_n(r['sh_2h']['s']) if r['sh_2h']['s'] else '-'} cm (ช่วง 2H จากหน้าเสา) / @ "
         f"{_n(r['sh_mid']['s']) if r['sh_mid']['s'] else '-'} cm (กลางคาน) — {_ok(r['ok'], 'ผ่าน', 'ไม่ผ่าน')}</td></tr>",
     ]
