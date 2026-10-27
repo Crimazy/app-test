@@ -16,9 +16,9 @@ from plotly.subplots import make_subplots
 from continuous_beam import (
     BAR_SIZES, CODE99, CODES, EXAMPLE_LOADS, EXAMPLE_NODES, EXAMPLE_OVERRIDES, EXAMPLE_SPANS,
     HELPER_KINDS, MAXS, POSITIONS, STIRRUP_SIZES, SUPPORT_TYPES, BeamModel, InputError, Load,
-    Node, Override, Settings, Span, design_all, helper_load, min_depth, read_workbook,
+    Node, Override, Settings, Span, combination, design_all, helper_load, min_depth, read_workbook,
 )
-from beam_design import LOAD_PRESETS, preset_factors
+from beam_design import LOAD_PRESETS, TONF_TO_KN, preset_factors
 from continuous_beam_report import build_report
 
 st.set_page_config(page_title="ออกแบบคานต่อเนื่อง", page_icon="📐", layout="wide")
@@ -44,8 +44,12 @@ SET_KEYS = dict(fc="cb_fc", fy="cb_fy", fys="cb_fys", Es="cb_Es", gc="cb_gc", co
 PROJECT_KEYS = ["project", "location", "member", "type", "date", "job", "eng", "eng_lic", "chk", "chk_lic"]
 
 
+SPAN_LOAD_COLS = ["DL (/m)", "LL (/m)"]
+
+
 def spans_df(spans):
-    return pd.DataFrame([{"ชื่อคาน": s.name, "L (m)": s.L, "b (cm)": s.b, "h (cm)": s.h} for s in spans])
+    return pd.DataFrame([{"ชื่อคาน": s.name, "L (m)": s.L, "b (cm)": s.b, "h (cm)": s.h,
+                          "DL (/m)": None, "LL (/m)": None} for s in spans]).astype({c: float for c in SPAN_LOAD_COLS})
 
 
 def nodes_df(nodes):
@@ -99,6 +103,7 @@ def table_editor(name: str, base, key: str, **kw) -> pd.DataFrame:
     return out
 
 
+ss.setdefault("cb_unit", "t")
 if "cb_spans" not in ss:
     load_state(Settings(), EXAMPLE_SPANS, EXAMPLE_NODES, EXAMPLE_LOADS, EXAMPLE_OVERRIDES,
                dict(project="ตัวอย่าง: บ้านพักอาศัย 2 ชั้น", member="B1", date=str(date.today().year)))
@@ -124,6 +129,22 @@ with st.sidebar:
         load_state(Settings(), EXAMPLE_SPANS, EXAMPLE_NODES, EXAMPLE_LOADS, EXAMPLE_OVERRIDES,
                    dict(project="ตัวอย่าง: บ้านพักอาศัย 2 ชั้น", member="B1", date=str(date.today().year)))
         ss.pop("cb_loaded_file", None)
+        st.rerun()
+
+    st.radio("หน่วยแรง (น้ำหนักบรรทุก / ผลวิเคราะห์)", ["t", "kN"], key="cb_unit", horizontal=True,
+             format_func=lambda u: "ตัน (t)" if u == "t" else "กิโลนิวตัน (kN)",
+             help="แผ่น DESIGN / OUTPUT ยังแสดงเป็น t-m และ kg-m ตามแบบฟอร์มเดิม")
+    if ss.get("_cb_unit_prev", "t") != ss.cb_unit:      # convert the load tables
+        f = TONF_TO_KN if ss.cb_unit == "kN" else 1 / TONF_TO_KN
+        sp = ss.get("cb_spans_saved", ss.cb_spans).copy()
+        sp[SPAN_LOAD_COLS] = sp[SPAN_LOAD_COLS].astype(float) * f
+        ld = ss.get("cb_loads_saved", ss.cb_loads).copy()
+        ld[["w1 / P", "w2"]] = ld[["w1 / P", "w2"]].astype(float) * f
+        ss.cb_spans, ss.cb_loads = sp, ld
+        ss.pop("cb_spans_saved", None)
+        ss.pop("cb_loads_saved", None)
+        ss._cb_unit_prev = ss.cb_unit
+        ss.cb_ver += 1
         st.rerun()
 
     st.header("1. วัสดุ และ มาตรฐาน")
@@ -163,6 +184,9 @@ sett = Settings(**{f: ss[k] for f, k in SET_KEYS.items()})
 sett = Settings(**{**sett.__dict__, "legs": int(sett.legs), "stir": float(sett.stir), "db": float(sett.db),
                    "load_factors": preset_factors(ss.cb_lc, (ss.cb_fD, ss.cb_fL))})
 
+U = TONF_TO_KN if ss.cb_unit == "kN" else 1.0          # t -> display unit
+fu, mu, wu_u = ("kN", "kN-m", "kN/m") if ss.cb_unit == "kN" else ("t", "t-m", "t/m")
+
 # --------------------------------------------------------------------------
 # Header + INPUT tables
 # --------------------------------------------------------------------------
@@ -175,9 +199,10 @@ tabs = st.tabs(["📥 INPUT", "📊 ANALYSIS", "🔩 DESIGN", "📄 OUTPUT", "�
 with tabs[0]:
     st.markdown("#### 3. รูปแบบคาน : ช่วงคาน (ซ้าย → ขวา) และ จุดรองรับ")
     st.checkbox("คานเดี่ยวทุกช่วง (ไม่ต่อเนื่องที่จุดรองรับ)", key="cb_allsimple")
-    c1, c2 = st.columns([2, 5])
+    c1, c2 = st.columns([3, 5])
     with c1:
-        st.caption("ช่วงคาน — เพิ่ม/ลบแถวได้ (1–10 ช่วง)")
+        st.caption(f"ช่วงคาน — เพิ่ม/ลบแถวได้ (1–10 ช่วง) • DL, LL = น้ำหนักแผ่เต็มช่วง ({wu_u}) "
+                   "กรอกรายช่วงได้เลย (เพิ่มเติมจากตารางน้ำหนักข้อ 4)")
         sp_ed = table_editor(
             "spans", ss.cb_spans, f"cb_spans_ed_{ver}", num_rows="dynamic", hide_index=True, width="stretch",
             column_config={
@@ -185,10 +210,20 @@ with tabs[0]:
                 "L (m)": st.column_config.NumberColumn(help="ศก.เสา – ศก.เสา", min_value=0.1, format="%.2f"),
                 "b (cm)": st.column_config.NumberColumn(min_value=10.0, format="%.0f"),
                 "h (cm)": st.column_config.NumberColumn(min_value=10.0, format="%.0f"),
+                "DL (/m)": st.column_config.NumberColumn(f"DL ({wu_u})", format="%.2f",
+                                                         help="น้ำหนักบรรทุกคงที่แผ่เต็มช่วง (ไม่รวมน้ำหนักคาน)"),
+                "LL (/m)": st.column_config.NumberColumn(f"LL ({wu_u})", format="%.2f",
+                                                         help="น้ำหนักบรรทุกจรแผ่เต็มช่วง"),
             })
     sp_ed = sp_ed.dropna(subset=["L (m)", "b (cm)", "h (cm)"]).head(MAXS)
     spans = [Span(float(r["L (m)"]), float(r["b (cm)"]), float(r["h (cm)"]), str(r["ชื่อคาน"] or "B1"))
              for _, r in sp_ed.iterrows()]
+    span_loads = []
+    for i, (_, r) in enumerate(sp_ed.iterrows(), 1):
+        for case, col in (("DL", "DL (/m)"), ("LL", "LL (/m)")):
+            v = r.get(col)
+            if v is not None and not (isinstance(v, float) and math.isnan(v)) and v != 0:
+                span_loads.append(Load(i, case, "UDL", float(v) / U))
     nS = len(spans)
     with c2:
         st.caption(f"จุดรองรับ — ต้องมี {nS + 1} จุด (จุดที่ 1 ถึง {nS + 1})")
@@ -226,7 +261,7 @@ with tabs[0]:
                          "b/h": round(s.b / s.h, 2)})
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
-    st.markdown("#### 4. น้ำหนักบรรทุก (ตัน, เมตร) — น้ำหนักลง = ค่าบวก")
+    st.markdown(f"#### 4. น้ำหนักบรรทุกเพิ่มเติม ({fu}, เมตร) — น้ำหนักลง = ค่าบวก")
     c1, c2 = st.columns([3, 2])
     with c1:
         ld_ed = table_editor(
@@ -235,8 +270,8 @@ with tabs[0]:
                 "ช่วงที่": st.column_config.NumberColumn(min_value=1, max_value=MAXS, step=1, required=True),
                 "กรณี": st.column_config.SelectboxColumn(options=["DL", "LL"], required=True, default="DL"),
                 "ชนิด": st.column_config.SelectboxColumn(options=["UDL", "Point"], required=True, default="UDL"),
-                "w1 / P": st.column_config.NumberColumn(help="t/m หรือ P (t)", format="%.3f"),
-                "w2": st.column_config.NumberColumn(help="t/m (ว่าง = w1) — w1≠w2 = สามเหลี่ยม/คางหมู",
+                "w1 / P": st.column_config.NumberColumn(help=f"{wu_u} หรือ P ({fu})", format="%.3f"),
+                "w2": st.column_config.NumberColumn(help=f"{wu_u} (ว่าง = w1) — w1≠w2 = สามเหลี่ยม/คางหมู",
                                                     format="%.3f"),
                 "a (m)": st.column_config.NumberColumn(help="จากปลายซ้ายของช่วง (Point: ตำแหน่งแรง)",
                                                        format="%.2f"),
@@ -255,18 +290,20 @@ with tabs[0]:
                 "w": st.column_config.NumberColumn("w (kg/m²)", format="%.0f"),
             })
         hp_out = hp.copy()
-        hp_out["ลงคาน (t/m)"] = [
-            (lambda v: round(v, 3) if v is not None else None)(
+        hp_out[f"ลงคาน ({wu_u})"] = [
+            (lambda v: round(v * U, 3) if v is not None else None)(
                 helper_load(r["kind"], nn(r["S"]) or None, nn(r["L"]) or None, nn(r["w"]) or None))
             for _, r in hp.iterrows()]
-        st.dataframe(hp_out[["item", "ลงคาน (t/m)"]].rename(columns={"item": "รายการ"}),
+        st.dataframe(hp_out[["item", f"ลงคาน ({wu_u})"]].rename(columns={"item": "รายการ"}),
                      hide_index=True, width="stretch")
         st.caption("สองทาง-ด้านยาว: w·S/3·(3−m²)/2, m = S/L • สองทาง-ด้านสั้น: w·S/3")
 
     opt = lambda v: None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
-    loads = [Load(int(r["ช่วงที่"]), str(r["กรณี"] or "DL"), str(r["ชนิด"] or "UDL"), float(r["w1 / P"]),
-                  opt(r["w2"]), opt(r["a (m)"]), opt(r["b (m)"]))
-             for _, r in ld_ed.dropna(subset=["ช่วงที่", "w1 / P"]).iterrows()]
+    to_t = lambda v: None if v is None else v / U
+    loads = span_loads + [
+        Load(int(r["ช่วงที่"]), str(r["กรณี"] or "DL"), str(r["ชนิด"] or "UDL"), float(r["w1 / P"]) / U,
+             to_t(opt(r["w2"])), opt(r["a (m)"]), opt(r["b (m)"]))
+        for _, r in ld_ed.dropna(subset=["ช่วงที่", "w1 / P"]).iterrows()]
 
 # --------------------------------------------------------------------------
 # Analysis
@@ -276,7 +313,7 @@ with tabs[0]:
 @st.cache_data(show_spinner="กำลังวิเคราะห์โครงสร้าง ...")
 def analyse(sett: Settings, spans: tuple, nodes: tuple, loads: tuple):
     m = BeamModel(sett, list(spans), list(nodes), list(loads))
-    return m.summary(), m.stations(), m.reactions(), m.X0
+    return m.summary(), m.stations(), m.reactions(), m.X0, m
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -288,7 +325,7 @@ err = None
 try:
     if not spans:
         raise InputError("กรุณาใส่ช่วงคานอย่างน้อย 1 ช่วง")
-    summary, stations, reactions, X0 = analyse(sett, tuple(spans), tuple(nodes), tuple(loads))
+    summary, stations, reactions, X0, model = analyse(sett, tuple(spans), tuple(nodes), tuple(loads))
 except InputError as exc:
     err = str(exc)
 
@@ -342,7 +379,122 @@ all_ok = all(r["ok"] for r in rows)
 # --------------------------------------------------------------------------
 # ANALYSIS tab
 # --------------------------------------------------------------------------
+def r2(v: float) -> float:
+    """Round half away from zero to 2 decimals (12.665 -> 12.67, as in hand calculations)."""
+    return math.copysign(math.floor(abs(v) * 100 + 0.5 + 1e-7) / 100, v)
+
+
+def span_diagram(cmb: dict) -> go.Figure:
+    """Loads + reactions, SFD and BMD with values, one load combination."""
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06, row_heights=[0.36, 0.32, 0.32],
+                        subplot_titles=("", f"V ({fu})", f"M ({mu})"))
+    total = X0[-1]
+    green, red, blue = "#188038", "#d93025", "#1a73e8"
+    fig.add_shape(type="line", x0=0, x1=total, y0=0, y1=0, line=dict(color="#3c4043", width=5), row=1, col=1)
+    wmax = max([abs(sp["udl"]) for sp in cmb["spans"]] +
+               [max(abs(o["w1"]), abs(o["w2"])) for sp in cmb["spans"] for o in sp["others"] if o["kind"] == "dist"]
+               + [1e-9])
+    for sp in cmb["spans"]:
+        x0, x1 = sp["X0"], sp["X0"] + sp["L"]
+        fig.add_annotation(x=(x0 + x1) / 2, y=-0.28, text=f"{sp['L']:.2f} m", showarrow=False, row=1, col=1)
+        if abs(sp["udl"]) > 1e-9:
+            hgt = 0.25 + 0.35 * abs(sp["udl"]) / wmax
+            fig.add_shape(type="rect", x0=x0, x1=x1, y0=0.08, y1=hgt, line=dict(color=green, width=2),
+                          fillcolor="rgba(24,128,56,0.07)", row=1, col=1)
+            for xa in [x0 + (x1 - x0) * k / 6 for k in range(7)]:
+                fig.add_annotation(x=xa, y=0.08, ax=xa, ay=hgt, xref="x", yref="y", axref="x", ayref="y",
+                                   showarrow=True, arrowhead=2, arrowcolor=green, arrowwidth=1.5, text="")
+            fig.add_annotation(x=(x0 + x1) / 2, y=hgt + 0.1, showarrow=False, font=dict(color=green, size=13),
+                               text=f"W = {r2(sp['udl'] * U):.2f} {wu_u}", row=1, col=1)
+        for o in sp["others"]:
+            if o["kind"] == "point":
+                xp = x0 + o["a"]
+                fig.add_annotation(x=xp, y=0.08, ax=xp, ay=0.88, xref="x", yref="y", axref="x", ayref="y",
+                                   showarrow=True, arrowhead=2, arrowcolor="#e37400", arrowwidth=2.5, text="")
+                fig.add_annotation(x=xp, y=0.98, text=f"P = {r2(o['w1'] * U):.2f} {fu}", showarrow=False,
+                                   font=dict(color="#e37400", size=12), row=1, col=1)
+            else:
+                xa, xb = x0 + o["a"], x0 + o["b"]
+                ya = 0.08 + 0.4 * abs(o["w1"]) / wmax
+                yb = 0.08 + 0.4 * abs(o["w2"]) / wmax
+                fig.add_scatter(x=[xa, xa, xb, xb, xa], y=[0.08, ya, yb, 0.08, 0.08], mode="lines", fill="toself",
+                                line=dict(color="#e37400", width=1.5), fillcolor="rgba(227,116,0,0.08)",
+                                hoverinfo="skip", showlegend=False, row=1, col=1)
+                fig.add_annotation(x=(xa + xb) / 2, y=max(ya, yb) + 0.08, showarrow=False,
+                                   font=dict(color="#e37400", size=11),
+                                   text=f"{o['w1'] * U:.2f}→{o['w2'] * U:.2f} {wu_u}", row=1, col=1)
+    for r in cmb["reactions"]:
+        sym = {"PIN": "triangle-up", "COLUMN": "triangle-up", "FIXED": "square", "FREE": None}[r["kind"]]
+        if sym:
+            fig.add_scatter(x=[r["X"]], y=[-0.07], mode="markers", showlegend=False, hoverinfo="skip",
+                            marker=dict(symbol=sym, size=16, color="#f9ab00", line=dict(color="#3c4043", width=1)),
+                            row=1, col=1)
+            fig.add_annotation(x=r["X"], y=-0.42, ax=r["X"], ay=-0.82, xref="x", yref="y", axref="x", ayref="y",
+                               showarrow=True, arrowhead=2, arrowcolor=red, arrowwidth=2, text="")
+            fig.add_annotation(x=r["X"], y=-0.95, text=f"Ry = {r2(r['R'] * U):.2f} {fu}", showarrow=False,
+                               font=dict(color="#3c4043", size=12), row=1, col=1)
+    fig.update_yaxes(range=[-1.1, 1.1], visible=False, row=1, col=1)
+
+    for sp in cmb["spans"]:
+        X = [sp["X0"] + x for x in sp["x"]]
+        V = [v * U for v in sp["V"]]
+        M = [m_ * U for m_ in sp["M"]]
+        fig.add_scatter(x=X, y=[max(v, 0) for v in V], mode="lines", line=dict(color=red, width=2), fill="tozeroy",
+                        fillcolor="rgba(217,48,37,0.10)", showlegend=False, hovertemplate="%{y:.2f}", row=2, col=1)
+        fig.add_scatter(x=X, y=[min(v, 0) for v in V], mode="lines", line=dict(color=blue, width=2), fill="tozeroy",
+                        fillcolor="rgba(26,115,232,0.10)", showlegend=False, hovertemplate="%{y:.2f}", row=2, col=1)
+        for xv, vv, side in ((X[0], V[0], "right"), (X[-1], V[-1], "left")):
+            if abs(vv) < 0.005:              # free end of a cantilever
+                continue
+            pos = ("top " if vv >= 0 else "bottom ") + side
+            fig.add_scatter(x=[xv], y=[vv], mode="markers+text", text=[f"{r2(vv):.2f}"], textposition=pos,
+                            marker=dict(size=9, color="rgba(0,0,0,0)", line=dict(color=red, width=1.5)),
+                            showlegend=False, hoverinfo="skip", row=2, col=1)
+        fig.add_scatter(x=X, y=M, mode="lines", line=dict(color=red, width=2.5), fill="tozeroy",
+                        fillcolor="rgba(217,48,37,0.08)", showlegend=False, hovertemplate="%{y:.2f}", row=3, col=1)
+        marks = []
+        if sp["Mmax"] > 1e-6:
+            marks.append((sp["X0"] + sp["x_Mmax"], sp["Mmax"] * U, "top center"))
+        for xv, mv, side in ((X[0], M[0], "right"), (X[-1], M[-1], "left")):
+            if abs(mv) >= 0.005:             # labels kept on their own span's side of the support
+                marks.append((xv, mv, ("bottom " if mv < 0 else "top ") + side))
+        if marks:
+            fig.add_scatter(x=[m_[0] for m_ in marks], y=[m_[1] for m_ in marks], mode="markers+text",
+                            text=[f"{r2(m_[1]):.2f}" for m_ in marks], textposition=[m_[2] for m_ in marks],
+                            marker=dict(size=9, color="rgba(0,0,0,0)", line=dict(color=red, width=1.5)),
+                            showlegend=False, hoverinfo="skip", row=3, col=1)
+    for rr, key in ((2, "V"), (3, "M")):
+        fig.add_hline(y=0, line=dict(color="#3c4043", width=1), row=rr, col=1)
+        vals = [v * U for sp in cmb["spans"] for v in sp[key]] + [0.0]
+        lo, hi = min(vals), max(vals)
+        pad = 0.22 * (hi - lo or 1.0)          # room for the value labels
+        fig.update_yaxes(range=[lo - pad, hi + pad], row=rr, col=1)
+    for x in X0:
+        fig.add_vline(x=x, line=dict(color="#e8eaed", width=1))
+    fig.update_xaxes(title_text="X (m)", row=3, col=1)
+    fig.update_layout(height=820, margin=dict(l=10, r=10, t=30, b=10), plot_bgcolor="white", hovermode="x")
+    return fig
+
+
 with tabs[1]:
+    st.markdown("##### แผนภาพรายช่วง — น้ำหนัก แรงปฏิกิริยา แรงเฉือน และโมเมนต์")
+    cases = {f"Factored: {sett.fD:g}DL + {sett.fL:g}LL": (sett.fD, sett.fL), "Service: DL + LL": (1.0, 1.0),
+             "DL": (1.0, 0.0), "LL": (0.0, 1.0)}
+    case = st.radio("กรณีน้ำหนัก (LL เต็มทุกช่วง)", list(cases), horizontal=True, key="cb_diag_case")
+    cmb = combination(model, *cases[case])
+    st.plotly_chart(span_diagram(cmb), width="stretch")
+    st.dataframe(clean(pd.DataFrame([{
+        "ช่วง": sp["span"], "L (m)": sp["L"], f"W ({wu_u})": r2(sp["udl"] * U) if sp["udl"] else None,
+        f"V ซ้าย ({fu})": r2(sp["V_left"] * U), f"V ขวา ({fu})": r2(sp["V_right"] * U),
+        f"M ซ้าย ({mu})": r2(sp["M_left"] * U), f"M+ max ({mu})": r2(sp["Mmax"] * U), "ที่ x (m)": sp["x_Mmax"],
+        f"M ขวา ({mu})": r2(sp["M_right"] * U),
+    } for sp in cmb["spans"]])).style.format(precision=2, na_rep="-"), hide_index=True, width="stretch")
+    st.markdown("**แรงปฏิกิริยา:** " + " • ".join(f"Ry{r['node']} = {r2(r['R'] * U):.2f} {fu}"
+                                                 for r in cmb["reactions"] if r["kind"] != "FREE"))
+    st.caption("W = น้ำหนักแผ่เต็มช่วงรวม (รวมน้ำหนักคานเมื่อเลือก) คูณตัวคูณของกรณีที่เลือก • แผนภาพนี้วาง LL ทุกช่วงพร้อมกัน "
+               "— ค่าออกแบบใช้ envelope (Pattern LL) ด้านล่าง • M บวก = ท้องคานรับแรงดึง")
+    st.divider()
+    st.markdown(f"##### Envelope สำหรับออกแบบ ({mu}, {fu})")
     st.caption(f"Factored envelope = max/min ของ {sett.fD}DL + {sett.fL}LL "
                f"{'(pattern ทีละช่วง)' if sett.pattern else '(LL เต็มทุกช่วง)'} และ 1.4DL • "
                "M บวก = ท้องคานรับแรงดึง • M ที่ผิวเสา (x = c/2) • Vu ที่ระยะ d จากผิวเสา")
@@ -352,13 +504,15 @@ with tabs[1]:
         "M min กลาง": s["Mmid_min"], "M ขวา max": s["MR_max"], "M ขวา min": s["MR_min"],
         "Vu ซ้าย": s["Vu_left"], "Vu กลาง": s["Vu_mid"], "Vu ขวา": s["Vu_right"], "d (cm)": s["d"],
     } for s in summary])
-    st.markdown("##### สรุปแรงภายในแต่ละช่วง (t-m, t)")
+    force_cols = [c for c in sdf.columns if c.startswith(("M ", "M+", "Vu"))]
+    sdf[force_cols] = sdf[force_cols] * U
     st.dataframe(clean(sdf).style.format(precision=2), hide_index=True, width="stretch")
 
     stdf = pd.DataFrame(stations)
+    stdf[["Mmax", "Mmin", "Vmax", "Vmin"]] = stdf[["Mmax", "Mmin", "Vmax", "Vmin"]] * U
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.09,
-                        subplot_titles=("Bending Moment Diagram (Mu envelope, t-m)",
-                                        "Shear Force Diagram (Vu envelope, t)"))
+                        subplot_titles=(f"Bending Moment Diagram (Mu envelope, {mu})",
+                                        f"Shear Force Diagram (Vu envelope, {fu})"))
     for s in range(1, nS + 1):
         seg = stdf[stdf.span == s]
         first = s == 1
@@ -383,9 +537,10 @@ with tabs[1]:
 
     st.markdown("##### แรงปฏิกิริยาที่จุดรองรับ")
     st.dataframe(clean(pd.DataFrame([{
-        "จุด": r["node"], "X (m)": r["X"], "ชนิด": r["kind"], "R จาก DL (t)": r["RD"], "R จาก LL (t)": r["RL"],
-        "Ru max (t)": r["Ru_max"], "Ru min (t)": r["Ru_min"], "Mu เข้าเสา max (t-m)": r["Mu_max"],
-        "Mu เข้าเสา min (t-m)": r["Mu_min"]} for r in reactions])).style.format(precision=2),
+        "จุด": r["node"], "X (m)": r["X"], "ชนิด": r["kind"], f"R จาก DL ({fu})": r["RD"] * U,
+        f"R จาก LL ({fu})": r["RL"] * U, f"Ru max ({fu})": r["Ru_max"] * U, f"Ru min ({fu})": r["Ru_min"] * U,
+        f"Mu เข้าเสา max ({mu})": r["Mu_max"] * U, f"Mu เข้าเสา min ({mu})": r["Mu_min"] * U}
+        for r in reactions])).style.format(precision=2),
         hide_index=True, width="stretch")
     st.download_button("⬇️ ค่าตามตำแหน่ง (CSV)", stdf.to_csv(index=False).encode("utf-8-sig"),
                        file_name="analysis_stations.csv", mime="text/csv")
@@ -566,7 +721,9 @@ with tabs[4]:
    - คานเดี่ยวหลายตัวต่อกัน: ติ๊ก "คานเดี่ยวทุกช่วง" หรือเอาติ๊ก "ต่อเนื่อง" ออกเฉพาะจุดที่ต้องการตัด
      (ห้ามตัดที่จุดโคนคานยื่น มิฉะนั้นโครงสร้างไม่เสถียร)
    - Column: คิด stiffness เสาบน/ล่าง (4EI/H, ปลายไกลยึดแน่น) ถ้าไม่ใส่ขนาดเสา จะเท่ากับ Pin
-3. แท็บ INPUT ข้อ 4: ใส่น้ำหนัก DL / LL ทีละแถว (ตัน, เมตร) — ใช้ตารางตัวช่วยแปลงน้ำหนักพื้น/ผนังได้
+3. น้ำหนักแผ่เต็มช่วง: กรอก DL / LL ในตารางช่วงคานได้เลย (รายช่วง) • น้ำหนักอื่น (แรงจุด, สามเหลี่ยม/คางหมู,
+   บางส่วนของช่วง) ใส่ในตาราง INPUT ข้อ 4 • เลือกหน่วยแรง ตัน หรือ kN ที่แถบซ้าย
+   • แท็บ ANALYSIS มีแผนภาพรายช่วง (W, Ry, SFD, BMD พร้อมค่า) แบบรายการคำนวณมือ
 4. **ไม่ต้องกด RUN** — วิเคราะห์ใหม่อัตโนมัติทุกครั้งที่แก้ข้อมูล
 5. แท็บ DESIGN: ออกแบบทุกช่วง 3 ตำแหน่ง เลือก Singly/Doubly อัตโนมัติ — แก้ Ø เหล็ก/จำนวนชั้น/จำนวนเส้น/
    เหล็กปลอก ได้ใน "ช่องสีเหลือง"
