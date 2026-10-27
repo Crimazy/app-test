@@ -6,7 +6,7 @@ import streamlit as st
 
 # Keep widget values when switching pages: Streamlit drops the state of widgets
 # that are not rendered, so re-assign them as plain session state.
-_SKIP = ("_ed_", "_ex_", "cb_canvas_", "cb_popup_", "_form_")   # editors, charts, components, forms
+_SKIP = ("_ed_", "_ex_", "cb_canvas_", "cb_popup_", "_form_", "_up")   # editors, charts, components, forms, uploaders
 for _k in list(st.session_state.keys()):
     if _k.startswith(("bm_", "_bm_", "cb_")) and not any(t in _k for t in _SKIP) or _k in {
         "shape", "b", "h", "D", "cover", "fc", "fy", "fyt", "agg", "bar", "nx", "ny", "n_circ",
