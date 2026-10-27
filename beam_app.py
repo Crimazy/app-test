@@ -15,9 +15,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from beam_design import (
-    ACI, CODES, DPT, GAMMA_C, KSC_TO_MPA, MAIN_BARS, STIRRUPS, SUPPORTS, TONF_TO_KN,
+    ACI, CODES, DPT, GAMMA_C, KSC_TO_MPA, LOAD_PRESETS, MAIN_BARS, STIRRUPS, SUPPORTS, TONF_TO_KN,
     BeamInput, BeamSection, Layer, Location, Reinforcement, deflection, design_location,
-    development_length, factored_load, load_combinations, min_depth, shear_check,
+    development_length, factored_load, load_combinations, min_depth, preset_factors, shear_check,
     span_forces, suggest_reinforcement,
 )
 from beam_report import build_beam_report
@@ -43,6 +43,7 @@ DEFAULTS = dict(
     unit_mat="ksc", unit_force="kN", code=DPT,
     bw=300.0, h=600.0, tbeam=False, bf=1000.0, hf=120.0, cover=40.0,
     fc=240.0, fy=4000.0, fyt=2400.0, agg=20.0, stir="RB9", legs=2,
+    lc="code", lc_fd=1.4, lc_fl=1.7,
     mode="จากน้ำหนักบรรทุก", support="end", span=6.0, wd=15.0, wl=10.0, selfw=True,
     sus=0.0, dlim="L/240",
     mu_sup=150.0, vu_sup=120.0, mu_mid=100.0, vu_mid=60.0,
@@ -137,6 +138,13 @@ with st.sidebar:
                             help="น้ำหนักบรรทุกคงที่แผ่กระจาย (ไม่รวมน้ำหนักคาน)")
             c2.number_input(f"LL ({wu_u})", 0.0, 1000.0, step=1.0, key=K("wl"))
             st.checkbox(f"รวมน้ำหนักคานเอง ({GAMMA_C:.0f} kN/m³)", key=K("selfw"))
+            st.selectbox("Load combination", list(LOAD_PRESETS), format_func=LOAD_PRESETS.get, key=K("lc"),
+                         help="ตามมาตรฐาน: มยผ. 1103 = 1.4D + 1.7L, ACI 318-19 = 1.2D + 1.6L • "
+                              "ตรวจ 1.4D เพิ่มเสมอเมื่อตัวคูณ DL < 1.4")
+            if V("lc") == "custom":
+                c1, c2 = st.columns(2)
+                c1.number_input("ตัวคูณ DL", 1.0, 2.0, step=0.05, key=K("lc_fd"))
+                c2.number_input("ตัวคูณ LL", 1.0, 2.5, step=0.05, key=K("lc_fl"))
             c1, c2 = st.columns(2)
             c1.number_input("สัดส่วน LL ค้างนาน", 0.0, 1.0, step=0.05, key=K("sus"),
                             help="ใช้คำนวณการโก่งตัวระยะยาว")
@@ -185,7 +193,8 @@ if analysis:
     w_self = GAMMA_C * Ag_m2 if V("selfw") else 0.0          # kN/m = N/mm
     wD = V("wd") * F + w_self
     wL = V("wl") * F
-    combo, wu = factored_load(code, wD, wL)
+    factors = preset_factors(V("lc"), (V("lc_fd"), V("lc_fl")))
+    combo, wu = factored_load(code, wD, wL, factors)
     sign_sup = -1 if SUPPORTS[support]["cn"] > 0 else 1
     d_sup = BeamSection(inp, r_sup).tension_steel(sign_sup)[1]
     frc = span_forces(inp, span, support, wu, d_sup)
@@ -206,7 +215,7 @@ st.caption(f"มาตรฐาน: **{CODES[code]}** • ออกแบบร�
            "แรงเฉือน, การโก่งตัว, ระยะฝังยึด และรายละเอียดเหล็กเสริม • หน่วยภายใน SI")
 
 if analysis:
-    combos = " , ".join(f"{n} = {kN(w * 1e3):,.2f}" for n, w in load_combinations(code, wD, wL))
+    combos = " , ".join(f"{n} = {kN(w * 1e3):,.2f}" for n, w in load_combinations(code, wD, wL, factors))
     st.info(f"น้ำหนักบรรทุก: DL = {kN(wD * 1e3):,.2f} {wu_u} (น้ำหนักคาน {kN(w_self * 1e3):,.2f}), "
             f"LL = {kN(wL * 1e3):,.2f} {wu_u} → {combos} {wu_u} • ใช้ **wu = {kN(wu * 1e3):,.2f} {wu_u}** "
             f"({combo})", icon="⚖️")

@@ -117,3 +117,13 @@ def test_minimum_depth_and_helper(example):
     assert helper_load("สองทาง-ด้านยาว", 4, 5, 438) == pytest.approx(0.68912)
     assert helper_load("ผนัง (w×สูง)", 2.8, None, 180) == pytest.approx(0.504)
     assert math.isclose(st.rhomax, 0.0229386610671937, rel_tol=1e-12)
+
+
+def test_load_factor_override_scales_envelope():
+    """1.2D+1.6L chosen with the ACI 318-99 design rules (and vice versa)."""
+    base = BeamModel(Settings(code=CODE19), EXAMPLE_SPANS, EXAMPLE_NODES, EXAMPLE_LOADS).summary()
+    mixed = BeamModel(Settings(load_factors=(1.2, 1.6)), EXAMPLE_SPANS, EXAMPLE_NODES, EXAMPLE_LOADS).summary()
+    for a, b in zip(base, mixed):
+        assert a["Mpos_max"] == pytest.approx(b["Mpos_max"]) and a["Vu_left"] == pytest.approx(b["Vu_left"])
+    st = Settings(load_factors=(1.2, 1.6))
+    assert (st.fD, st.fL, st.phiv) == (1.2, 1.6, 0.85)

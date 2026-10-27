@@ -174,3 +174,13 @@ def test_design_location_and_suggestion():
     r2 = suggest_reinforcement(inp, Location("sup", -300e6, 200e3, SINGLY), 20, 16)
     assert r2.top1.n >= 2 and r2.bot1.n >= 2
     assert design_location(inp, Location("sup", -300e6, 200e3, r2)).ok
+
+
+def test_load_factor_presets():
+    from beam_design import load_combinations, preset_factors
+    assert preset_factors("code") is None
+    assert factored_load(ACI, 10, 5, preset_factors("1.4/1.7")) == ("1.4D + 1.7L", pytest.approx(22.5))
+    assert factored_load(DPT, 10, 5, preset_factors("1.2/1.6"))[1] == pytest.approx(20.0)
+    custom = preset_factors("custom", (1.3, 1.5))
+    assert [n for n, _ in load_combinations(DPT, 10, 5, custom)] == ["1.4D", "1.3D + 1.5L"]
+    assert factored_load(DPT, 10, 0, custom) == ("1.4D", pytest.approx(14.0))

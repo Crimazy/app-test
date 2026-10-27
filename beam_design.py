@@ -81,15 +81,45 @@ def phi_shear(code: str) -> float:
     return 0.85 if code == DPT else 0.75
 
 
-def load_combinations(code: str, D: float, L: float) -> list[tuple[str, float]]:
-    """Gravity load combinations; D and L in any consistent unit."""
-    if code == DPT:
-        return [("1.4D + 1.7L", 1.4 * D + 1.7 * L)]
-    return [("1.4D", 1.4 * D), ("1.2D + 1.6L", 1.2 * D + 1.6 * L)]
+# Load-factor choice shared by the beam pages
+LOAD_PRESETS = {
+    "code": "ตามมาตรฐานที่เลือก",
+    "1.4/1.7": "1.4D + 1.7L (ACI 318-99 / วสท. / มยผ. 1103)",
+    "1.2/1.6": "1.2D + 1.6L (ACI 318-19)",
+    "custom": "กำหนดเอง",
+}
 
 
-def factored_load(code: str, D: float, L: float) -> tuple[str, float]:
-    return max(load_combinations(code, D, L), key=lambda c: abs(c[1]))
+def preset_factors(preset: str, custom: tuple[float, float] | None = None) -> tuple[float, float] | None:
+    """(fD, fL) for a LOAD_PRESETS key; None = follow the design code."""
+    if preset == "1.4/1.7":
+        return 1.4, 1.7
+    if preset == "1.2/1.6":
+        return 1.2, 1.6
+    if preset == "custom" and custom:
+        return float(custom[0]), float(custom[1])
+    return None
+
+
+def load_combinations(code: str, D: float, L: float,
+                      factors: tuple[float, float] | None = None) -> list[tuple[str, float]]:
+    """Gravity load combinations; D and L in any consistent unit.
+
+    factors = (fD, fL) overrides the code combination; 1.4D is always checked as well
+    when fD < 1.4 (as in ACI 318-19 5.3.1a).
+    """
+    if factors is None:
+        factors = (1.4, 1.7) if code == DPT else (1.2, 1.6)
+    fD, fL = factors
+    combos = [(f"{fD:g}D + {fL:g}L", fD * D + fL * L)]
+    if fD < 1.4:
+        combos.insert(0, ("1.4D", 1.4 * D))
+    return combos
+
+
+def factored_load(code: str, D: float, L: float,
+                  factors: tuple[float, float] | None = None) -> tuple[str, float]:
+    return max(load_combinations(code, D, L, factors), key=lambda c: abs(c[1]))
 
 
 # --------------------------------------------------------------------------

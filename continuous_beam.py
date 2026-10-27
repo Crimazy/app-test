@@ -51,6 +51,7 @@ class Settings:
     legs: int = 2
     db: float = 20.0           # mm, default main bar
     all_simple: bool = False
+    load_factors: tuple | None = None   # (fD, fL); None = follow the code
 
     @property
     def is99(self) -> bool:
@@ -58,10 +59,14 @@ class Settings:
 
     @property
     def fD(self) -> float:
+        if self.load_factors:
+            return self.load_factors[0]
         return 1.4 if self.is99 else 1.2
 
     @property
     def fL(self) -> float:
+        if self.load_factors:
+            return self.load_factors[1]
         return 1.7 if self.is99 else 1.6
 
     @property
