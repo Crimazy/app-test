@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <style>
-  :root { --dl:#188038; --ll:#1a73e8; --pt:#e37400; --ink:#3c4043; --muted:#5f6368; --sel:#f9ab00; }
+  :root { --dl:#188038; --ll:#1a73e8; --wu:#9334e6; --pt:#e37400; --ink:#3c4043; --muted:#5f6368; --sel:#f9ab00; }
   html, body { margin:0; padding:0; background:#fff; font-family:"Source Sans Pro","Sarabun",sans-serif; color:var(--ink); }
   #wrap { position:relative; }
   svg { display:block; width:100%; user-select:none; }
@@ -14,7 +14,7 @@
   .hint { font-size:12px; color:var(--muted); padding:2px 4px; }
   .pop { position:absolute; background:#fff; border:1px solid #dadce0; border-radius:10px;
          box-shadow:0 6px 24px rgba(0,0,0,.18); padding:10px 12px; font-size:13px; z-index:5;
-         max-height:410px; overflow:auto; min-width:300px; }
+         max-height:470px; overflow:auto; min-width:300px; }
   .pop h4 { margin:0 0 8px; font-size:14px; }
   .row { display:flex; gap:6px; align-items:center; margin:4px 0; flex-wrap:wrap; }
   .row label { min-width:54px; color:var(--muted); }
@@ -30,6 +30,14 @@
   button.primary { background:#ff4b4b; color:#fff; border-color:#ff4b4b; }
   button.link { border:none; color:#1a73e8; padding:2px 4px; }
   button.del { border:none; color:#c5221f; padding:0 4px; }
+  .item { border:1px solid #e8eaed; border-radius:8px; padding:6px 8px; margin:6px 0; background:#fafafa; }
+  .item .row label { min-width:auto; }
+  .item input[type=text] { width:74px; }
+  .item input.nm { width:150px; }
+  .item select.kind { width:190px; }
+  .item .res { font-size:12px; color:var(--muted); margin-top:2px; }
+  .item .res.err { color:#c5221f; }
+  .pop.wide { min-width:560px; max-width:640px; }
 </style>
 </head>
 <body>
@@ -38,7 +46,7 @@
   <svg id="svg" height="330"></svg>
 </div>
 <script>
-const FRAME_H = 500;
+const FRAME_H = 560;
 let data = null, pop = null, selected = null;
 
 function send(type, extra) {
@@ -75,7 +83,7 @@ function draw() {
   const total = X0[X0.length - 1] || 1;
   const sx = (x) => padL + (W - padL - padR) * x / total;
   let wmax = 1e-9;
-  data.spans.forEach(s => ["DL", "LL"].forEach(k => wmax = Math.max(wmax, Math.abs(num(s[k]) || 0))));
+  data.spans.forEach(s => ["DL", "LL", "WU"].forEach(k => wmax = Math.max(wmax, Math.abs(num(s[k]) || 0))));
   data.extra.forEach(e => { if (e.kind !== "Point") wmax = Math.max(wmax, Math.abs(num(e.w1) || 0), Math.abs(num(e.w2) || 0)); });
 
   data.spans.forEach((s, i) => {
@@ -83,7 +91,8 @@ function draw() {
     if (selected && selected[0] === "span" && selected[1] === i + 1)
       el("rect", {x: xa, y: 6, width: xb - xa, height: 284, fill: "rgba(251,188,4,0.13)", stroke: "#f9ab00", "stroke-dasharray": "4 3"});
     let top = yBeam - 6;
-    [["DL", "var(--dl)", "rgba(24,128,56,0.08)"], ["LL", "var(--ll)", "rgba(26,115,232,0.08)"]].forEach(([k, c, fill]) => {
+    [["DL", "var(--dl)", "rgba(24,128,56,0.08)"], ["LL", "var(--ll)", "rgba(26,115,232,0.08)"],
+     ["WU", "var(--wu)", "rgba(147,52,230,0.08)"]].forEach(([k, c, fill]) => {
       const w = num(s[k]) || 0;
       if (!w) return;
       const h = 18 + 40 * Math.abs(w) / wmax;
@@ -95,12 +104,12 @@ function draw() {
         el("path", {d: `M${x - 3},${top - 7} L${x},${top - 1} L${x + 3},${top - 7} Z`, fill: c});
       }
       el("text", {x: (xa + xb) / 2, y: top - h + 13, "text-anchor": "middle", "font-size": 12, fill: c, "font-weight": 600},
-         null, `${k} = ${f2(w)} ${data.wu}`);
+         null, `${k === "WU" ? "Wu" : k} = ${f2(w)} ${data.wu}`);
       top -= h + 3;
     });
     const stack = {};
     data.extra.filter(e => Number(e.span) === i + 1).forEach(e => {
-      const c = e.case === "LL" ? "var(--ll)" : "var(--dl)";
+      const c = e.case === "LL" ? "var(--ll)" : (e.case === "WU" ? "var(--wu)" : "var(--dl)");
       if (e.kind === "Point") {
         let a = num(e.a); if (a === null) a = s.L / 2;
         const x = sx(X0[i] + a), k = stack[a.toFixed(4)] || 0;
@@ -110,7 +119,7 @@ function draw() {
           el("path", {d: `M${x - 5},${yBeam - 14} L${x},${yBeam - 5} L${x + 5},${yBeam - 14} Z`, fill: "var(--pt)"});
         }
         el("text", {x: x, y: Math.max(12, top - 60 - 13 * k), "text-anchor": "middle", "font-size": 11, fill: c, "font-weight": 600},
-           null, `P${e.case} ${f2(e.w1)} ${data.fu}`);
+           null, `P${e.case === "WU" ? "u" : e.case} ${f2(e.w1)} ${data.fu}`);
       } else {
         const a = num(e.a) || 0; let b = num(e.b); if (b === null) b = s.L;
         const w1 = num(e.w1) || 0; let w2 = num(e.w2); if (w2 === null) w2 = w1;
@@ -119,7 +128,7 @@ function draw() {
         stack[key] = k + 1;
         el("path", {d: `M${x1},${top} L${x1},${ya} L${x2},${yb} L${x2},${top} Z`, fill: "rgba(227,116,0,0.07)", stroke: c, "stroke-dasharray": "3 2"});
         el("text", {x: (x1 + x2) / 2, y: Math.min(ya, yb) - 4 - 12 * k, "text-anchor": "middle", "font-size": 10, fill: c},
-           null, `${e.case} ${f2(w1)}→${f2(w2)}`);
+           null, `${e.case === "WU" ? "Wu" : e.case} ${f2(w1)}→${f2(w2)}`);
       }
     });
     el("text", {x: (xa + xb) / 2, y: yBeam + 40, "text-anchor": "middle", "font-size": 12, fill: "var(--ink)"},
@@ -170,17 +179,46 @@ function field(label, id, value, type) {
   return `<label for="${id}">${label}</label><input id="${id}" type="${type || "number"}" step="any" value="${value ?? ""}">`;
 }
 
-function loadRow(e) {
-  const tr = document.createElement("tr");
-  tr.innerHTML = `<td><select class="case"><option ${e.case !== "LL" ? "selected" : ""}>DL</option><option ${e.case === "LL" ? "selected" : ""}>LL</option></select></td>
-    <td><select class="kind"><option value="Point" ${e.kind === "Point" ? "selected" : ""}>Point</option><option value="UDL" ${e.kind !== "Point" ? "selected" : ""}>w a–b</option></select></td>
-    <td><input class="w1" type="number" step="any" value="${e.w1 ?? ""}"></td>
-    <td><input class="w2" type="number" step="any" value="${e.w2 ?? ""}" placeholder="=w1"></td>
-    <td><input class="a" type="number" step="any" value="${e.a ?? ""}"></td>
-    <td><input class="b" type="number" step="any" value="${e.b ?? ""}" placeholder="L"></td>
-    <td><button class="del" title="ลบ">✕</button></td>`;
-  tr.querySelector(".del").onclick = () => tr.remove();
-  return tr;
+const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+function itemCard(it) {
+  const div = document.createElement("div");
+  div.className = "item";
+  const opts = (list, v) => list.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("");
+  const inp = (cls, label, v, ph) =>
+    `<label>${label}</label><input type="text" class="${cls}" value="${esc(v)}" placeholder="${ph || ""}">`;
+  const render = () => {
+    const kind = div.querySelector(".kind").value;
+    const g = div.querySelector(".geo");
+    const unit = kind === data.point ? data.fu : (kind === data.slab || kind.startsWith("ผนัง") ? "kg/m²" : data.wu);
+    let h = "";
+    if (kind === data.slab) {
+      h = `<div class="row">${inp("S", "พื้น S", it.S, "m")}${inp("L", "× L", it.L, "m")}${inp("t", "หนา", it.t, "cm")}
+           <label>แบบ</label><select class="type">${opts(data.slabTypes, it.type || "อัตโนมัติ")}</select>
+           <label>คานอยู่</label><select class="side">${opts(data.sides, it.side || "อัตโนมัติ")}</select></div>
+           <div class="row">${inp("DL", "SDL", it.DL, "kg/m²")}${inp("LL", "LL", it.LL, "kg/m²")}${inp("WU", "Wu", it.WU, "kg/m²")}</div>`;
+    } else {
+      h = `<div class="row">${kind.startsWith("ผนัง") ? inp("S", "สูง/กว้าง S", it.S, "m") : ""}
+           ${inp("DL", "DL", it.DL, unit)}${inp("LL", "LL", it.LL, unit)}${inp("WU", "Wu", it.WU, unit)}</div>
+           <div class="row">${inp("a", kind === data.point ? "ที่ a" : "a", it.a, "m")}
+           ${kind === data.point ? "" : inp("b", "b", it.b, "L")}</div>`;
+    }
+    g.innerHTML = h;
+  };
+  div.innerHTML = `<div class="row"><input type="text" class="nm" value="${esc(it.name)}" placeholder="ชื่อรายการ">
+      <select class="kind">${opts(data.kinds, it.kind || data.slab)}</select>
+      <button class="del" title="ลบรายการ">✕</button></div><div class="geo"></div>
+      <div class="res ${it.err ? "err" : ""}">${it.res ? `ได้: DL ${it.res.DL || "-"} • LL ${it.res.LL || "-"} • Wu ${it.res.WU || "-"}` : ""}${it.note ? " — " + esc(it.note) : ""}</div>`;
+  div.querySelector(".kind").onchange = () => { it = collect(div); render(); };
+  div.querySelector(".del").onclick = () => div.remove();
+  render();
+  return div;
+}
+
+function collect(div) {
+  const v = (c) => { const e = div.querySelector("." + c); return e ? e.value : ""; };
+  return {name: v("nm"), kind: v("kind"), S: v("S"), L: v("L"), t: v("t"), type: v("type"), side: v("side"),
+          DL: v("DL"), LL: v("LL"), WU: v("WU"), a: v("a"), b: v("b")};
 }
 
 function openSpan(i, ev) {
@@ -188,29 +226,29 @@ function openSpan(i, ev) {
   selected = ["span", i + 1]; draw();
   const s = data.spans[i];
   const div = document.createElement("div");
-  div.className = "pop";
+  div.className = "pop wide";
   div.innerHTML = `<h4>ช่วงที่ ${i + 1}</h4>
-    <div class="row">${field("ชื่อคาน", "nm", s.name, "text")}${field("L (m)", "L", s.L)}</div>
-    <div class="row">${field("b (cm)", "b", s.b)}${field("h (cm)", "h", s.h)}</div>
-    <div class="row">${field(`DL (${data.wu})`, "DL", s.DL)}${field(`LL (${data.wu})`, "LL", s.LL)}</div>
-    <div style="margin-top:6px;color:var(--muted)">น้ำหนักอื่น — แรงจุด (P ${data.fu}) หรือแผ่บางส่วน/สามเหลี่ยม (w ${data.wu}), a, b วัดจากปลายซ้าย (m)</div>
-    <table><thead><tr><th>กรณี</th><th>ชนิด</th><th>w1/P</th><th>w2</th><th>a</th><th>b</th><th></th></tr></thead><tbody></tbody></table>
-    <button class="link" id="add">+ เพิ่มน้ำหนัก</button>
+    <div class="row">${field("ชื่อคาน", "nm", s.name, "text")}${field("L (m)", "L", s.L)}
+      ${field("b (cm)", "b", s.b)}${field("h (cm)", "h", s.h)}</div>
+    <div style="margin-top:6px;color:var(--muted)">รายการน้ำหนักใต้คานช่วงนี้ — เพิ่มได้ไม่จำกัด • พิมพ์สูตรได้ทุกช่อง เช่น 2400*0.12+150 •
+      DL/LL = ใช้งาน (โปรแกรมคูณให้), Wu = ประลัยที่คูณแล้ว • น้ำหนักคานคิดให้อัตโนมัติ</div>
+    <div class="items"></div>
+    <button class="link" id="addSlab">+ พื้น</button><button class="link" id="addWall">+ ผนัง</button>
+    <button class="link" id="addPoint">+ แรงจุด</button><button class="link" id="addLine">+ น้ำหนักแผ่</button>
     <div class="btns"><button id="cancel">ยกเลิก</button><button class="primary" id="ok">ตกลง</button></div>`;
-  const tb = div.querySelector("tbody");
-  data.extra.filter(e => Number(e.span) === i + 1).forEach(e => tb.appendChild(loadRow(e)));
-  div.querySelector("#add").onclick = () => tb.appendChild(loadRow({case: "DL", kind: "Point", a: f2(s.L / 2)}));
+  const box = div.querySelector(".items");
+  data.items.filter(it => Number(it.span) === i + 1).forEach(it => box.appendChild(itemCard(it)));
+  const add = (kind, extra) => box.appendChild(itemCard(Object.assign({kind: kind}, extra || {})));
+  div.querySelector("#addSlab").onclick = () => add(data.slab, {t: "12", DL: "150", LL: "200"});
+  div.querySelector("#addWall").onclick = () => add(data.kinds.find(k => k.startsWith("ผนัง")), {name: "ผนัง", S: "3", DL: "180"});
+  div.querySelector("#addPoint").onclick = () => add(data.point, {a: f2(s.L / 2)});
+  div.querySelector("#addLine").onclick = () => add(data.kinds.find(k => k.startsWith("น้ำหนักแผ่")));
   div.querySelector("#cancel").onclick = closePop;
   div.querySelector("#ok").onclick = () => {
     const g = (id) => div.querySelector("#" + id).value;
-    const extra = [...tb.querySelectorAll("tr")].map(tr => ({
-      span: i + 1, case: tr.querySelector(".case").value, kind: tr.querySelector(".kind").value,
-      w1: num(tr.querySelector(".w1").value), w2: num(tr.querySelector(".w2").value),
-      a: num(tr.querySelector(".a").value), b: num(tr.querySelector(".b").value),
-    })).filter(e => e.w1 !== null);
+    const items = [...box.querySelectorAll(".item")].map(collect);
     setValue({type: "span", index: i + 1, nonce: Date.now() + Math.random(),
-              span: {name: g("nm"), L: num(g("L")), b: num(g("b")), h: num(g("h")), DL: num(g("DL")), LL: num(g("LL"))},
-              extra: extra});
+              span: {name: g("nm"), L: num(g("L")), b: num(g("b")), h: num(g("h"))}, items: items});
     if (pop) { pop.remove(); pop = null; }
   };
   pop = div; place(div, ev);
@@ -228,8 +266,9 @@ function openNode(j, ev) {
       ${field("c (cm)", "c", n.c)}</div>
     <div class="row"><label>เสาล่าง</label>${field("b", "lb", n.lb)}${field("h", "lh", n.lh)}${field("H (m)", "lH", n.lH)}</div>
     <div class="row"><label>เสาบน</label>${field("b", "ub", n.ub)}${field("h", "uh", n.uh)}${field("H (m)", "uH", n.uH)}</div>
-    <div class="row"><label><input type="checkbox" id="cont" ${n.cont ? "checked" : ""}> ต่อเนื่องผ่านจุดนี้</label></div>
-    <div style="color:var(--muted);font-size:12px">Pin = หมุนได้ • Fixed = ยึดแน่น • Free = ปลายยื่น • Column = คิด stiffness เสา 4EI/H</div>
+    <div class="row"><label><input type="checkbox" id="cont" ${n.cont ? "checked" : ""}> คานต่อเนื่องผ่านจุดนี้</label></div>
+    <div style="color:var(--muted);font-size:12px">ติ๊ก = คานต่อเนื่อง • ไม่ติ๊ก = ตัดโมเมนต์ เป็นคานเดี่ยวต่อกัน
+      (Pin อย่างเดียวยังเป็นคานต่อเนื่อง)<br>Pin = หมุนได้ • Fixed = ยึดแน่น • Free = ปลายยื่น • Column = คิด stiffness เสา 4EI/H</div>
     <div class="btns"><button id="cancel">ยกเลิก</button><button class="primary" id="ok">ตกลง</button></div>`;
   div.querySelector("#cancel").onclick = closePop;
   div.querySelector("#ok").onclick = () => {

@@ -61,7 +61,9 @@ def _num(v):
     return None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
 
 
-DL_C, LL_C, PT_C = "#188038", "#1a73e8", "#e37400"
+DL_C, LL_C, WU_C, PT_C = "#188038", "#1a73e8", "#9334e6", "#e37400"
+CASE_C = {"DL": DL_C, "LL": LL_C, "WU": WU_C}
+CASE_FILL = {"DL": "rgba(24,128,56,0.08)", "LL": "rgba(26,115,232,0.08)", "WU": "rgba(147,52,230,0.08)"}
 
 
 def input_figure(spans: list[dict], nodes: list[Node], extra: list[dict], wu_u: str, fu: str,
@@ -79,7 +81,7 @@ def input_figure(spans: list[dict], nodes: list[Node], extra: list[dict], wu_u: 
     for s in spans:
         X0.append(X0[-1] + s["L"])
     total = X0[-1] or 1.0
-    wmax = max([abs(_num(s.get(k)) or 0) for s in spans for k in ("DL", "LL")] +
+    wmax = max([abs(_num(s.get(k)) or 0) for s in spans for k in ("DL", "LL", "WU")] +
                [max(abs(_num(e.get("w1")) or 0), abs(_num(e.get("w2")) or 0)) for e in extra
                 if e.get("kind") != "Point"] + [1e-9])
 
@@ -100,21 +102,22 @@ def input_figure(spans: list[dict], nodes: list[Node], extra: list[dict], wu_u: 
         fig.add_annotation(x=xm, y=-0.42, text=f"<b>ช่วง {i}</b> {s['L']:.2f} m • {s['b']:g}×{s['h']:g}",
                            showarrow=False, font=dict(size=12, color="#3c4043"))
         top = 0.06
-        for key, color in (("DL", DL_C), ("LL", LL_C)):
+        for key, color in (("DL", DL_C), ("LL", LL_C), ("WU", WU_C)):
             w = _num(s.get(key)) or 0.0
             if w == 0:
                 continue
             hgt = 0.12 + 0.3 * abs(w) / wmax
             fig.add_shape(type="rect", x0=x0, x1=x1, y0=top, y1=top + hgt, line=dict(color=color, width=1.5),
-                          fillcolor="rgba(24,128,56,0.08)" if key == "DL" else "rgba(26,115,232,0.08)")
-            fig.add_annotation(x=xm, y=top + hgt / 2, text=f"{key} = {w:.2f} {wu_u}", showarrow=False,
+                          fillcolor=CASE_FILL[key])
+            fig.add_annotation(x=xm, y=top + hgt / 2, text=f"{'Wu' if key == 'WU' else key} = {w:.2f} {wu_u}",
+                               showarrow=False,
                                font=dict(size=12, color=color))
             top += hgt + 0.02
         stack = {}                            # point loads at the same place: stack the labels
         for e in extra:
             if int(e.get("span") or 0) != i:
                 continue
-            col = DL_C if e.get("case") == "DL" else LL_C
+            col = CASE_C.get(e.get("case"), DL_C)
             if e.get("kind") == "Point":
                 a = _num(e.get("a"))
                 a = s["L"] / 2 if a is None else a
@@ -126,7 +129,8 @@ def input_figure(spans: list[dict], nodes: list[Node], extra: list[dict], wu_u: 
                                        ayref="y", showarrow=True, arrowhead=2, arrowwidth=2.5, arrowcolor=PT_C,
                                        text="")
                 fig.add_annotation(x=xp, y=top + 0.4 + 0.11 * k,
-                                   text=f"P{e.get('case')} {_num(e.get('w1')) or 0:.2f} {fu}",
+                                   text=f"P{'u' if e.get('case') == 'WU' else e.get('case')} "
+                                        f"{_num(e.get('w1')) or 0:.2f} {fu}",
                                    showarrow=False, font=dict(size=11, color=col))
             else:
                 a = _num(e.get("a")) or 0.0
