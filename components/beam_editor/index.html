@@ -3,15 +3,31 @@
 <head>
 <meta charset="utf-8">
 <style>
-  :root { --dl:#188038; --sdl:#8d6e00; --ll:#1a73e8; --wu:#9334e6; --pt:#e37400; --ink:#3c4043; --muted:#5f6368; --sel:#f9ab00; }
+  :root { --dl:#188038; --sdl:#8d6e00; --ll:#1a73e8; --wu:#9334e6; --pt:#e37400; --ink:#3c4043; --muted:#5f6368;
+          --sel:#f9ab00; --tool:#ff4b4b; }
   html, body { margin:0; padding:0; background:#fff; font-family:"Source Sans Pro","Sarabun",sans-serif; color:var(--ink); }
   #wrap { position:relative; }
-  svg { display:block; width:100%; user-select:none; }
-  .hit { fill:rgba(0,0,0,0); cursor:pointer; }
-  .hit:hover { fill:rgba(251,188,4,0.12); }
+  svg { display:block; width:100%; user-select:none; touch-action:none; }
+  .hint { font-size:12px; color:var(--muted); padding:2px 4px; min-height:16px; }
+  .bar { display:flex; flex-wrap:wrap; gap:4px; align-items:center; padding:4px 2px; border-bottom:1px solid #e8eaed; }
+  .bar .grp { display:flex; gap:2px; align-items:center; padding-right:6px; margin-right:2px; border-right:1px solid #e8eaed; }
+  .bar .grp:last-child { border-right:none; }
+  .tb { font:inherit; font-size:13px; padding:3px 8px; border-radius:6px; border:1px solid #dadce0; background:#fff;
+        cursor:pointer; white-space:nowrap; }
+  .tb:hover { background:#f1f3f4; }
+  .tb.on { background:var(--tool); color:#fff; border-color:var(--tool); }
+  .tb:disabled { opacity:.4; cursor:default; }
+  .bar label { font-size:12px; color:var(--muted); }
+  .bar input, .bar select { font:inherit; font-size:13px; padding:2px 4px; border:1px solid #dadce0; border-radius:6px; }
+  .bar input.val { width:62px; }
+  .bar input.sz { width:42px; }
+  .hit { fill:rgba(0,0,0,0); }
   .node { cursor:pointer; }
   .node:hover { filter:drop-shadow(0 0 3px var(--sel)); }
-  .hint { font-size:12px; color:var(--muted); padding:2px 4px; }
+  .dim { cursor:pointer; }
+  .dim:hover text { fill:var(--tool); }
+  .ld { cursor:pointer; }
+  .erase .ld:hover { opacity:.35; }
   .pop { position:absolute; background:#fff; border:1px solid #dadce0; border-radius:10px;
          box-shadow:0 6px 24px rgba(0,0,0,.18); padding:10px 12px; font-size:13px; z-index:5;
          max-height:470px; overflow:auto; min-width:300px; }
@@ -20,11 +36,6 @@
   .row label { min-width:54px; color:var(--muted); }
   input[type=number], input[type=text], select { width:70px; padding:3px 4px; border:1px solid #dadce0; border-radius:6px; font:inherit; }
   input[type=text] { width:90px; }
-  table { border-collapse:collapse; margin-top:4px; }
-  th, td { padding:2px 3px; font-size:12px; }
-  th { color:var(--muted); font-weight:600; text-align:left; }
-  td input[type=number] { width:56px; }
-  td select { width:62px; }
   .btns { display:flex; gap:8px; justify-content:flex-end; margin-top:10px; }
   button { font:inherit; padding:4px 12px; border-radius:6px; border:1px solid #dadce0; background:#fff; cursor:pointer; }
   button.primary { background:#ff4b4b; color:#fff; border-color:#ff4b4b; }
@@ -42,27 +53,73 @@
 </head>
 <body>
 <div id="wrap">
-  <div class="hint">คลิกที่ช่วงคานเพื่อกรอกขนาดและน้ำหนัก • คลิกที่จุดรองรับเพื่อเปลี่ยนชนิดจุดรองรับ/ขนาดเสา</div>
-  <svg id="svg" height="330"></svg>
+  <div class="bar" id="bar">
+    <div class="grp">
+      <button class="tb" data-tool="select" title="เลือก/ลาก: คลิกช่วงคาน = แก้ขนาดและน้ำหนัก • คลิกจุด = แก้จุดรองรับ • ลากจุดรองรับ = เปลี่ยนความยาวช่วง • คลิกตัวเลขความยาว = พิมพ์ค่า">✋ เลือก/ลาก</button>
+    </div>
+    <div class="grp">
+      <button class="tb" data-tool="Pin" title="คลิกบนแนวคาน: วางจุดรองรับ Pin (แบ่งช่วง) • คลิกเลยปลายคาน = ต่อช่วงใหม่ • คลิกจุดเดิม = เปลี่ยนเป็น Pin">▲ Pin</button>
+      <button class="tb" data-tool="Fixed" title="จุดรองรับยึดแน่น">▮ Fixed</button>
+      <button class="tb" data-tool="Column" title="ต่อกับเสา (คิด stiffness เสา) — วางแล้วกรอกขนาดเสา">▣ เสา</button>
+      <button class="tb" data-tool="Free" title="ปลายอิสระ: คลิกเลยปลายคาน = ต่อคานยื่น • คลิกจุดเดิม = เปลี่ยนเป็นปลายอิสระ">○ คานยื่น</button>
+      <button class="tb" data-tool="hinge" title="คลิกจุดรองรับ: สลับ ต่อเนื่อง ↔ ตัดโมเมนต์ (คานเดี่ยวต่อกัน)">✂ ตัด/ต่อ</button>
+      <button class="tb" data-tool="erase" title="คลิกจุดรองรับ = ลบจุด (รวมช่วง) • คลิกน้ำหนัก = ลบน้ำหนักนั้น">🗑 ลบ</button>
+    </div>
+    <div class="grp">
+      <button class="tb" data-tool="udl" title="ลากบนคานจากจุดเริ่มถึงจุดสิ้นสุด = น้ำหนักแผ่ (คลิกเฉย ๆ = เต็มช่วง)">⬇ แผ่</button>
+      <button class="tb" data-tool="point" title="คลิกบนคาน = แรงจุดที่ตำแหน่งนั้น">↓ แรงจุด</button>
+      <button class="tb" data-tool="slab" title="คลิกช่วงคาน = เพิ่มพื้น (กรอกขนาด ความหนา SDL LL)">▦ พื้น</button>
+      <button class="tb" data-tool="wall" title="คลิกช่วงคาน = เพิ่มผนัง (kg/m² × สูง)">▥ ผนัง</button>
+      <select id="case" title="กรณีน้ำหนัก"><option>DL</option><option>SDL</option><option>LL</option><option value="WU">Wu</option></select>
+      <input id="val" class="val" type="text" value="1" title="ค่าน้ำหนัก — พิมพ์สูตรได้"><span id="valu" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div class="grp">
+      <label>ระยะ snap</label><select id="snap"><option value="0.01">0.01</option><option value="0.05" selected>0.05</option>
+        <option value="0.1">0.10</option><option value="0.25">0.25</option><option value="0.5">0.50</option></select>
+      <label>ช่วงใหม่ b×h</label><input id="nb" class="sz" type="number" value="25"><input id="nh" class="sz" type="number" value="50">
+    </div>
+    <div class="grp">
+      <button class="tb" id="undo" title="ย้อนกลับ (Ctrl+Z)">↶</button>
+      <button class="tb" id="redo" title="ทำซ้ำ (Ctrl+Y)">↷</button>
+      <button class="tb" id="reset" title="เริ่มวาดใหม่: คานช่วงเดียว 4 m (Pin–Pin)">⟲ ใหม่</button>
+    </div>
+  </div>
+  <div class="hint" id="hint"></div>
+  <svg id="svg" height="390"></svg>
 </div>
 <script>
-const FRAME_H = 560;
-let data = null, pop = null, selected = null;
+const FRAME_H = 640, MIN_L = 0.2;
+const HINTS = {
+  select: "คลิกช่วงคาน = แก้ขนาด/รายการน้ำหนัก • คลิกจุด = แก้จุดรองรับ • ลากจุดรองรับซ้าย-ขวา = เปลี่ยนความยาวช่วง • คลิกตัวเลขความยาว = พิมพ์ค่าเอง",
+  Pin: "คลิกบนแนวคาน = วางจุดรองรับ Pin แบ่งช่วง • คลิกเลยปลายคาน (พื้นที่เส้นประ) = ต่อช่วงใหม่ • คลิกจุดเดิม = เปลี่ยนเป็น Pin",
+  Fixed: "คลิกจุดเดิม = เปลี่ยนเป็นยึดแน่น • คลิกบนคาน = วางจุดใหม่ • คลิกเลยปลายคาน = ต่อช่วงใหม่ปลายยึดแน่น",
+  Column: "คลิกจุด/คาน/เลยปลาย = จุดต่อเสา แล้วกรอกขนาดเสาบน-ล่าง (คิด stiffness 4EI/H)",
+  Free: "คลิกเลยปลายคาน = ต่อคานยื่น • คลิกจุดปลายเดิม = เปลี่ยนเป็นปลายอิสระ",
+  hinge: "คลิกจุดรองรับภายใน = สลับ ต่อเนื่อง ↔ ตัดโมเมนต์ (วงกลมขาว = ตัดโมเมนต์ เป็นคานเดี่ยวต่อกัน)",
+  erase: "คลิกจุดรองรับ = ลบจุด (ช่วงสองข้างรวมเป็นช่วงเดียว / ปลายคาน = ลบช่วงปลาย) • คลิกน้ำหนัก = ลบน้ำหนักนั้น",
+  udl: "กดค้างแล้วลากบนคาน = น้ำหนักแผ่ช่วง a–b (ข้ามหลายช่วงได้) • คลิกเฉย ๆ = เต็มช่วง • เลือกกรณีและค่าที่แถบเครื่องมือ",
+  point: "คลิกบนคาน = แรงจุดที่ตำแหน่งนั้น (กรณีและค่าตามแถบเครื่องมือ)",
+  slab: "คลิกช่วงคาน = เพิ่มพื้น แล้วกรอกขนาดพื้น ความหนา SDL LL — โปรแกรมคิด One-way/Two-way ให้",
+  wall: "คลิกช่วงคาน = เพิ่มผนัง (SDL kg/m² × ความสูง)",
+};
+let data = null, M = null, pop = null, selected = null, tool = "select";
+let pending = null, pendingAt = 0, hist = [], fut = [], drag = null, hover = null, G = null;
 
 function send(type, extra) {
   window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, extra || {}), "*");
 }
-function setValue(v) { send("streamlit:setComponentValue", {value: v, dataType: "json"}); }
-
 window.addEventListener("message", (ev) => {
   if (!ev.data || ev.data.type !== "streamlit:render") return;
   data = ev.data.args.data;
-  draw();
+  const stale = pending !== null && data.ack !== pending && Date.now() - pendingAt < 5000;
+  if (!stale) { pending = null; M = clone(data.model); }
+  if (!drag) draw();
   send("streamlit:setFrameHeight", {height: FRAME_H});
 });
 send("streamlit:componentReady", {apiVersion: 1});
 
 const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("svg");
 function el(tag, attrs, parent, text) {
   const e = document.createElementNS(NS, tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -70,117 +127,475 @@ function el(tag, attrs, parent, text) {
   (parent || svg).appendChild(e);
   return e;
 }
-const svg = document.getElementById("svg");
+const clone = (o) => JSON.parse(JSON.stringify(o));
 const num = (v) => (v === null || v === undefined || v === "" || Number.isNaN(Number(v))) ? null : Number(v);
 const f2 = (v) => (Math.round((Number(v) || 0) * 100) / 100).toFixed(2);
+const r4 = (v) => Math.round(v * 1e4) / 1e4;
+const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+const snapv = () => Number(document.getElementById("snap").value) || 0.05;
+const snap = (x) => r4(Math.round(x / snapv()) * snapv());
+const X0 = () => { const a = [0]; M.spans.forEach(s => a.push(r4(a[a.length - 1] + Number(s.L)))); return a; };
+
+// ----------------------------------------------------------------- model edits
+function commit(fn) {
+  hist.push(clone(M)); if (hist.length > 60) hist.shift(); fut = [];
+  fn();
+  sendModel();
+}
+function sendModel() {
+  const nonce = Date.now() + Math.random();
+  pending = nonce; pendingAt = Date.now();
+  const items = M.items.map(it => { const o = {}; data.fields.forEach(f => o[f] = it[f] ?? ""); return o; });
+  send("streamlit:setComponentValue", {value: {type: "model", nonce: nonce, spans: M.spans, nodes: M.nodes, items: items},
+                                       dataType: "json"});
+  draw();
+}
+const newNode = (kind) => ({kind: kind, c: null, lb: null, lh: null, lH: null, ub: null, uh: null, uH: null, cont: true});
+const newSpan = (L, tmpl) => ({name: tmpl ? tmpl.name : "B1", L: r4(L),
+  b: num(document.getElementById("nb").value) || (tmpl ? tmpl.b : 25), h: num(document.getElementById("nh").value) || (tmpl ? tmpl.h : 50)});
+const fmt = (v) => String(r4(v));
+
+function splitSpan(i, a) {          // span i (0-based) split at a (m from its left end)
+  const s = M.spans[i], L = Number(s.L);
+  M.spans.splice(i, 1, Object.assign({}, s, {L: r4(a)}), Object.assign({}, s, {L: r4(L - a)}));
+  M.nodes.splice(i + 1, 0, newNode("Pin"));
+  const out = [];
+  M.items.forEach(it => {
+    const sp = Number(it.span);
+    if (sp - 1 < i) { out.push(it); return; }
+    if (sp - 1 > i) { out.push(Object.assign({}, it, {span: sp + 1})); return; }
+    if (it.kind === data.point) {
+      const p = num(it.a) ?? L / 2;
+      out.push(p <= a ? Object.assign({}, it, {a: fmt(p)}) : Object.assign({}, it, {span: sp + 1, a: fmt(p - a)}));
+      return;
+    }
+    const ia = num(it.a) ?? 0, ib = num(it.b) ?? L;
+    const fullL = num(it.a) === null && num(it.b) === null;
+    if (ia < a) out.push(Object.assign({}, it, fullL ? {} : {a: fmt(ia), b: fmt(Math.min(ib, a))}));
+    if (ib > a) out.push(Object.assign({}, it, {span: sp + 1}, fullL ? {} : {a: fmt(Math.max(ia - a, 0)), b: fmt(ib - a)}));
+  });
+  M.items = out;
+}
+function mergeAt(j) {               // remove interior node j (0-based): spans j-1 and j merge
+  const L1 = Number(M.spans[j - 1].L), L2 = Number(M.spans[j].L);
+  M.spans.splice(j - 1, 2, Object.assign({}, M.spans[j - 1], {L: r4(L1 + L2)}));
+  M.nodes.splice(j, 1);
+  M.items = M.items.map(it => {
+    const sp = Number(it.span);
+    if (sp < j) return it;
+    if (sp > j + 1) return Object.assign({}, it, {span: sp - 1});
+    if (it.kind === data.point) {
+      const p = num(it.a) ?? (sp === j ? L1 : L2) / 2;
+      return Object.assign({}, it, {span: j, a: fmt(sp === j ? p : p + L1)});
+    }
+    const ia = num(it.a) ?? 0, ib = num(it.b) ?? (sp === j ? L1 : L2), off = sp === j ? 0 : L1;
+    return Object.assign({}, it, {span: j, a: fmt(ia + off), b: fmt(ib + off)});
+  });
+}
+function removeEnd(left) {
+  if (left) {
+    M.spans.shift(); M.nodes.shift();
+    M.items = M.items.filter(it => Number(it.span) !== 1).map(it => Object.assign({}, it, {span: Number(it.span) - 1}));
+  } else {
+    const n = M.spans.length;
+    M.spans.pop(); M.nodes.pop();
+    M.items = M.items.filter(it => Number(it.span) !== n);
+  }
+}
+function extend(x, kind) {           // new span from the nearest end to x
+  const X = X0(), tot = X[X.length - 1];
+  if (M.spans.length >= data.maxs) { flash(`ได้สูงสุด ${data.maxs} ช่วง`); return; }
+  if (x > tot) {
+    const L = r4(x - tot); if (L < MIN_L) return;
+    commit(() => { M.spans.push(newSpan(L, M.spans[M.spans.length - 1])); M.nodes.push(newNode(kind)); });
+  } else {
+    const L = r4(-x); if (L < MIN_L) return;
+    commit(() => {
+      M.spans.unshift(newSpan(L, M.spans[0])); M.nodes.unshift(newNode(kind));
+      M.items = M.items.map(it => Object.assign({}, it, {span: Number(it.span) + 1}));
+    });
+  }
+}
+function clampItems(i) {            // keep positions inside span i (1-based) after a length change
+  const L = Number(M.spans[i - 1].L);
+  M.items = M.items.filter(it => {
+    if (Number(it.span) !== i) return true;
+    if (it.kind === data.point) { const p = num(it.a); if (p !== null && p > L) it.a = fmt(L); return true; }
+    const a = num(it.a), b = num(it.b);
+    if (a !== null && a >= L - 1e-6) return false;
+    if (b !== null && b > L) it.b = fmt(L);
+    return true;
+  });
+}
+function addLoad(x1, x2) {          // x in m (global); x2 = null -> full span / point
+  const X = X0(), cs = document.getElementById("case").value, v = document.getElementById("val").value.trim();
+  if (!v) { flash("ใส่ค่าน้ำหนักที่แถบเครื่องมือก่อน"); return; }
+  const spanAt = (x) => { for (let i = 0; i < M.spans.length; i++) if (x <= X[i + 1] + 1e-9) return i; return M.spans.length - 1; };
+  commit(() => {
+    if (tool === "point") {
+      const i = spanAt(x1);
+      M.items.push(blank({span: i + 1, kind: data.point, a: fmt(Math.min(Math.max(x1 - X[i], 0), M.spans[i].L)), [cs]: v}));
+      return;
+    }
+    let a = Math.min(x1, x2 ?? x1), b = Math.max(x1, x2 ?? x1);
+    if (x2 === null || b - a < 1e-6) { const i = spanAt(x1); a = X[i]; b = X[i + 1]; }
+    a = Math.max(a, 0); b = Math.min(b, X[X.length - 1]);
+    for (let i = 0; i < M.spans.length; i++) {
+      const lo = Math.max(a, X[i]), hi = Math.min(b, X[i + 1]);
+      if (hi - lo < 1e-6) continue;
+      const full = lo - X[i] < 1e-6 && X[i + 1] - hi < 1e-6;
+      M.items.push(blank({span: i + 1, kind: data.line, [cs]: v, a: full ? "" : fmt(lo - X[i]), b: full ? "" : fmt(hi - X[i])}));
+    }
+  });
+}
+const blank = (o) => { const it = {}; data.fields.forEach(f => it[f] = ""); return Object.assign(it, o); };
+
+// ----------------------------------------------------------------- drawing
+let flashMsg = null;
+function flash(t) { flashMsg = t; setHint(); setTimeout(() => { flashMsg = null; setHint(); }, 2500); }
+function setHint() { document.getElementById("hint").textContent = flashMsg || HINTS[tool] || ""; }
+
+function geometry() {
+  const W = svg.clientWidth || 900, X = X0(), tot = X[X.length - 1] || 1;
+  const ext = Math.max(1.0, 0.14 * tot), xmin = -ext, xmax = tot + ext, padL = 16, padR = 16;
+  const sx = (x) => padL + (W - padL - padR) * (x - xmin) / (xmax - xmin);
+  const ix = (px) => xmin + (px - padL) * (xmax - xmin) / (W - padL - padR);
+  return {W, X, tot, ext, xmin, xmax, sx, ix, yBeam: 250};
+}
+
+function loadsOf(i) {               // drawable loads of span i (0-based) from items (+ results from Python)
+  const L = Number(M.spans[i].L), out = [];
+  M.items.forEach((it, idx) => {
+    if (Number(it.span) !== i + 1) return;
+    const res = it.res || {}, geo = it.geo || {};
+    const a = geo.a ?? num(it.a), b = geo.b ?? num(it.b);
+    ["DL", "SDL", "LL", "WU"].forEach(f => {
+      let v = res[f];
+      if (v === undefined || v === null) {
+        if (!(it.kind === data.line || it.kind === data.point) || num(it[f]) === null) return;
+        v = num(it[f]);
+      }
+      if (it.kind === data.point) { out.push({idx, f, point: true, P: v, a: a ?? L / 2}); return; }
+      const w1 = Array.isArray(v) ? v[0] : v, w2 = Array.isArray(v) ? v[1] : v;
+      const aa = a ?? 0, bb = b ?? L, full = aa <= 1e-6 && bb >= L - 1e-6 && Math.abs(w1 - w2) < 1e-12;
+      out.push({idx, f, full, w1, w2, a: aa, b: bb});
+    });
+  });
+  return out;
+}
+const COL = {DL: "var(--dl)", SDL: "var(--sdl)", LL: "var(--ll)", WU: "var(--wu)"};
+const FILL = {DL: "rgba(24,128,56,0.08)", SDL: "rgba(141,110,0,0.08)", LL: "rgba(26,115,232,0.08)", WU: "rgba(147,52,230,0.08)"};
+const LBL = (f) => f === "WU" ? "Wu" : f;
 
 function draw() {
   svg.innerHTML = "";
-  if (!data || !data.spans.length) return;
-  const W = svg.clientWidth || 900, padL = 30, padR = 30, yBeam = 205;
-  const X0 = [0];
-  data.spans.forEach(s => X0.push(X0[X0.length - 1] + Number(s.L)));
-  const total = X0[X0.length - 1] || 1;
-  const sx = (x) => padL + (W - padL - padR) * x / total;
-  let wmax = 1e-9;
-  data.spans.forEach(s => ["DL", "SDL", "LL", "WU"].forEach(k => wmax = Math.max(wmax, Math.abs(num(s[k]) || 0))));
-  data.extra.forEach(e => { if (e.kind !== "Point") wmax = Math.max(wmax, Math.abs(num(e.w1) || 0), Math.abs(num(e.w2) || 0)); });
-
-  data.spans.forEach((s, i) => {
-    const xa = sx(X0[i]), xb = sx(X0[i + 1]);
+  setHint();
+  document.querySelectorAll(".tb[data-tool]").forEach(b => b.classList.toggle("on", b.dataset.tool === tool));
+  document.getElementById("undo").disabled = !hist.length;
+  document.getElementById("redo").disabled = !fut.length;
+  document.getElementById("valu").textContent = tool === "point" ? data?.fu || "" : data?.wu || "";
+  svg.classList.toggle("erase", tool === "erase");
+  if (!M || !M.spans.length) return;
+  G = geometry();
+  const {W, X, tot, sx, yBeam} = G;
+  // extension zones
+  if (tool !== "select" && tool !== "hinge" && tool !== "erase") {
+    el("rect", {x: sx(G.xmin), y: yBeam - 12, width: sx(0) - sx(G.xmin), height: 24, fill: "rgba(95,99,104,0.06)", stroke: "#bdc1c6", "stroke-dasharray": "4 3"});
+    el("rect", {x: sx(tot), y: yBeam - 12, width: sx(G.xmax) - sx(tot), height: 24, fill: "rgba(95,99,104,0.06)", stroke: "#bdc1c6", "stroke-dasharray": "4 3"});
+  }
+  // ruler
+  const step = tot <= 6 ? 0.5 : (tot <= 20 ? 1 : 2);
+  el("line", {x1: sx(0), y1: 14, x2: sx(tot), y2: 14, stroke: "#dadce0"});
+  for (let x = 0; x <= tot + 1e-6; x = r4(x + step)) {
+    const major = Math.abs(x / (step * 2) - Math.round(x / (step * 2))) < 1e-6 || step >= 1;
+    el("line", {x1: sx(x), y1: 14, x2: sx(x), y2: major ? 22 : 18, stroke: "#bdc1c6"});
+    if (major) el("text", {x: sx(x), y: 11, "text-anchor": "middle", "font-size": 9, fill: "#9aa0a6"}, null, String(x));
+  }
+  // drawing surface (spans + extension zones)
+  const surf = el("rect", {x: sx(G.xmin), y: 26, width: sx(G.xmax) - sx(G.xmin), height: yBeam + 4, class: "hit",
+                           style: `cursor:${tool === "select" ? "pointer" : (tool === "hinge" || tool === "erase" ? "default" : "crosshair")}`});
+  surf.addEventListener("pointerdown", surfaceDown);
+  // loads (clickable only with the erase tool)
+  const LDPE = tool === "erase" ? "auto" : "none";
+  const wmax = Math.max(1e-9, ...M.spans.flatMap((s, i) => loadsOf(i).filter(l => !l.point).map(l => Math.max(Math.abs(l.w1), Math.abs(l.w2)))));
+  const placed = [];                  // x of point-load labels (stacked when close)
+  M.spans.forEach((s, i) => {
+    const xa = sx(X[i]), xb = sx(X[i + 1]);
     if (selected && selected[0] === "span" && selected[1] === i + 1)
-      el("rect", {x: xa, y: 6, width: xb - xa, height: 284, fill: "rgba(251,188,4,0.13)", stroke: "#f9ab00", "stroke-dasharray": "4 3"});
+      el("rect", {x: xa, y: 26, width: xb - xa, height: yBeam - 2, fill: "rgba(251,188,4,0.13)", stroke: "#f9ab00", "stroke-dasharray": "4 3", "pointer-events": "none"});
+    const lds = loadsOf(i);
     let top = yBeam - 6;
-    [["DL", "var(--dl)", "rgba(24,128,56,0.08)"], ["SDL", "var(--sdl)", "rgba(141,110,0,0.08)"],
-     ["LL", "var(--ll)", "rgba(26,115,232,0.08)"],
-     ["WU", "var(--wu)", "rgba(147,52,230,0.08)"]].forEach(([k, c, fill]) => {
-      const w = num(s[k]) || 0;
-      if (!w) return;
-      const h = 16 + 30 * Math.abs(w) / wmax;
-      el("rect", {x: xa, y: top - h, width: xb - xa, height: h, fill: fill, stroke: c, "stroke-width": 1.5});
-      const n = Math.max(3, Math.round((xb - xa) / 28));
-      for (let k2 = 0; k2 <= n; k2++) {
-        const x = xa + (xb - xa) * k2 / n;
-        el("line", {x1: x, y1: top - h, x2: x, y2: top - 2, stroke: c, "stroke-width": 1});
-        el("path", {d: `M${x - 3},${top - 7} L${x},${top - 1} L${x + 3},${top - 7} Z`, fill: c});
+    ["DL", "SDL", "LL", "WU"].forEach(f => {
+      const full = lds.filter(l => l.full && l.f === f);
+      const w = full.reduce((t, l) => t + l.w1, 0);
+      if (!full.length || Math.abs(w) < 1e-12) return;
+      const h = 14 + 26 * Math.abs(w) / wmax;
+      const g = el("g", {class: "ld", "pointer-events": LDPE});
+      el("rect", {x: xa, y: top - h, width: xb - xa, height: h, fill: FILL[f], stroke: COL[f], "stroke-width": 1.4}, g);
+      const n = Math.max(3, Math.round((xb - xa) / 30));
+      for (let k = 0; k <= n; k++) {
+        const x = xa + (xb - xa) * k / n;
+        el("line", {x1: x, y1: top - h, x2: x, y2: top - 2, stroke: COL[f], "stroke-width": 1}, g);
+        el("path", {d: `M${x - 3},${top - 7} L${x},${top - 1} L${x + 3},${top - 7} Z`, fill: COL[f]}, g);
       }
-      el("text", {x: (xa + xb) / 2, y: top - h + 13, "text-anchor": "middle", "font-size": 12, fill: c, "font-weight": 600},
-         null, `${k === "WU" ? "Wu" : k} = ${f2(w)} ${data.wu}`);
+      el("text", {x: (xa + xb) / 2, y: top - h + 12, "text-anchor": "middle", "font-size": 11, fill: COL[f], "font-weight": 600},
+         g, `${LBL(f)} = ${f2(w)} ${data.wu}`);
+      g.addEventListener("click", (ev) => { if (tool === "erase") { ev.stopPropagation(); eraseItems(full.map(l => l.idx), f); } });
       top -= h + 3;
     });
     const stack = {};
-    data.extra.filter(e => Number(e.span) === i + 1).forEach(e => {
-      const c = {LL: "var(--ll)", WU: "var(--wu)", SDL: "var(--sdl)"}[e.case] || "var(--dl)";
-      if (e.kind === "Point") {
-        let a = num(e.a); if (a === null) a = s.L / 2;
-        const x = sx(X0[i] + a), k = stack[a.toFixed(4)] || 0;
-        stack[a.toFixed(4)] = k + 1;
-        if (k === 0) {
-          el("line", {x1: x, y1: top - 55, x2: x, y2: yBeam - 8, stroke: "var(--pt)", "stroke-width": 2.5});
-          el("path", {d: `M${x - 5},${yBeam - 14} L${x},${yBeam - 5} L${x + 5},${yBeam - 14} Z`, fill: "var(--pt)"});
-        }
-        el("text", {x: x, y: Math.max(12, top - 60 - 13 * k), "text-anchor": "middle", "font-size": 11, fill: c, "font-weight": 600},
-           null, `P${e.case === "WU" ? "u" : e.case} ${f2(e.w1)} ${data.fu}`);
-      } else {
-        const a = num(e.a) || 0; let b = num(e.b); if (b === null) b = s.L;
-        const w1 = num(e.w1) || 0; let w2 = num(e.w2); if (w2 === null) w2 = w1;
-        const ya = top - 40 * Math.abs(w1) / wmax, yb = top - 40 * Math.abs(w2) / wmax;
-        const x1 = sx(X0[i] + a), x2 = sx(X0[i] + b), key = `d${a}-${b}`, k = stack[key] || 0;
+    lds.filter(l => !l.full).forEach(l => {
+      const g = el("g", {class: "ld", "pointer-events": LDPE});
+      if (l.point) {
+        const x = sx(X[i] + Math.min(l.a, s.L)), key = f2(l.a), k = stack[key] || 0;
         stack[key] = k + 1;
-        el("path", {d: `M${x1},${top} L${x1},${ya} L${x2},${yb} L${x2},${top} Z`, fill: "rgba(227,116,0,0.07)", stroke: c, "stroke-dasharray": "3 2"});
-        el("text", {x: (x1 + x2) / 2, y: Math.min(ya, yb) - 4 - 12 * k, "text-anchor": "middle", "font-size": 10, fill: c},
-           null, `${e.case === "WU" ? "Wu" : e.case} ${f2(w1)}→${f2(w2)}`);
+        if (k === 0) {
+          el("line", {x1: x, y1: top - 48, x2: x, y2: yBeam - 7, stroke: "var(--pt)", "stroke-width": 2.5}, g);
+          el("path", {d: `M${x - 5},${yBeam - 14} L${x},${yBeam - 5} L${x + 5},${yBeam - 14} Z`, fill: "var(--pt)"}, g);
+        }
+        const kk = placed.filter(px => Math.abs(px - x) < 70).length;
+        placed.push(x);
+        el("text", {x: x, y: Math.max(36, top - 52 - 12 * kk), "text-anchor": "middle", "font-size": 11, fill: COL[l.f], "font-weight": 600},
+           g, `P${l.f === "WU" ? "u" : l.f} ${f2(l.P)} ${data.fu}`);
+      } else {
+        const ya = top - 34 * Math.abs(l.w1) / wmax, yb = top - 34 * Math.abs(l.w2) / wmax;
+        const x1 = sx(X[i] + l.a), x2 = sx(X[i] + Math.min(l.b, s.L)), key = `${f2(l.a)}-${f2(l.b)}`, k = stack[key] || 0;
+        stack[key] = k + 1;
+        el("path", {d: `M${x1},${top} L${x1},${ya} L${x2},${yb} L${x2},${top} Z`, fill: FILL[l.f], stroke: COL[l.f], "stroke-dasharray": "3 2"}, g);
+        el("text", {x: (x1 + x2) / 2, y: Math.min(ya, yb) - 4 - 11 * k, "text-anchor": "middle", "font-size": 10, fill: COL[l.f]},
+           g, Math.abs(l.w1 - l.w2) < 1e-12 ? `${LBL(l.f)} ${f2(l.w1)}` : `${LBL(l.f)} ${f2(l.w1)}→${f2(l.w2)}`);
       }
+      g.addEventListener("click", (ev) => { if (tool === "erase") { ev.stopPropagation(); eraseItems([l.idx], l.f); } });
     });
-    el("text", {x: (xa + xb) / 2, y: yBeam + 40, "text-anchor": "middle", "font-size": 12, fill: "var(--ink)"},
-       null, `ช่วง ${i + 1}: ${f2(s.L)} m • ${s.b}×${s.h} cm`);
-    const hit = el("rect", {x: xa + 2, y: 8, width: Math.max(4, xb - xa - 4), height: yBeam + 25, class: "hit"});
-    hit.addEventListener("click", (ev) => openSpan(i, ev));
+    el("text", {x: (xa + xb) / 2, y: yBeam + 22, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "pointer-events": "none"},
+       null, `${s.name || "B"} ${s.b}×${s.h}`);
   });
-  el("line", {x1: sx(0), y1: yBeam, x2: sx(total), y2: yBeam, stroke: "#3c4043", "stroke-width": 6, "pointer-events": "none"});
+  // beam
+  el("line", {x1: sx(0), y1: yBeam, x2: sx(tot), y2: yBeam, stroke: "#3c4043", "stroke-width": 6, "pointer-events": "none"});
+  // dimensions
+  const yd = yBeam + 82;
+  M.spans.forEach((s, i) => {
+    const xa = sx(X[i]), xb = sx(X[i + 1]);
+    const g = el("g", {class: "dim"});
+    el("line", {x1: xa, y1: yd, x2: xb, y2: yd, stroke: "#9aa0a6"}, g);
+    [xa, xb].forEach(x => el("line", {x1: x, y1: yd - 6, x2: x, y2: yd + 6, stroke: "#9aa0a6"}, g));
+    el("path", {d: `M${xa + 7},${yd - 3} L${xa},${yd} L${xa + 7},${yd + 3} M${xb - 7},${yd - 3} L${xb},${yd} L${xb - 7},${yd + 3}`, stroke: "#9aa0a6", fill: "none"}, g);
+    el("rect", {x: (xa + xb) / 2 - 34, y: yd - 17, width: 68, height: 14, fill: "#fff"}, g);
+    el("text", {x: (xa + xb) / 2, y: yd - 6, "text-anchor": "middle", "font-size": 12, fill: "var(--ink)", "font-weight": 600}, g, `${f2(s.L)} m`);
+    el("text", {x: (xa + xb) / 2, y: yd + 16, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)"}, g, `ช่วง ${i + 1}`);
+    g.addEventListener("click", (ev) => { if (tool === "select") { ev.stopPropagation(); openLength(i, ev); } });
+  });
+  el("text", {x: sx(tot / 2), y: yd + 36, "text-anchor": "middle", "font-size": 11, fill: "#9aa0a6"}, null, `ยาวรวม ${f2(tot)} m`);
+  // nodes
+  M.nodes.slice(0, M.spans.length + 1).forEach((n, j) => drawNode(n, j));
+  // hover guide / drag preview
+  if (hover !== null && !["select", "hinge", "erase"].includes(tool)) {
+    el("line", {x1: sx(hover), y1: 28, x2: sx(hover), y2: yBeam + 40, stroke: "var(--tool)", "stroke-dasharray": "3 3", "pointer-events": "none"});
+    el("text", {x: sx(hover) + 4, y: yBeam + 52, "font-size": 11, fill: "var(--tool)", "pointer-events": "none"}, null, `x = ${f2(hover)} m`);
+  }
+  if (drag && drag.type === "udl") {
+    const a = Math.min(drag.x1, drag.x2), b = Math.max(drag.x1, drag.x2);
+    el("rect", {x: sx(a), y: yBeam - 60, width: Math.max(2, sx(b) - sx(a)), height: 54, fill: "rgba(255,75,75,0.12)", stroke: "var(--tool)", "pointer-events": "none"});
+    el("text", {x: (sx(a) + sx(b)) / 2, y: yBeam - 66, "text-anchor": "middle", "font-size": 11, fill: "var(--tool)", "pointer-events": "none"},
+       null, `${f2(a)} – ${f2(b)} m`);
+  }
+}
 
-  data.nodes.slice(0, data.spans.length + 1).forEach((n, j) => {
-    const x = sx(X0[j]);
-    const g = el("g", {class: "node"});
-    const brk = j > 0 && j < data.spans.length && (data.allSimple || !n.cont);
-    if (selected && selected[0] === "node" && selected[1] === j + 1)
-      el("circle", {cx: x, cy: yBeam + 8, r: 18, fill: "none", stroke: "#f9ab00", "stroke-width": 2.5}, g);
-    if (n.kind === "Pin") {
-      el("path", {d: `M${x},${yBeam + 3} L${x - 11},${yBeam + 21} L${x + 11},${yBeam + 21} Z`, fill: "#f9ab00", stroke: "#3c4043"}, g);
-      el("line", {x1: x - 15, y1: yBeam + 24, x2: x + 15, y2: yBeam + 24, stroke: "#3c4043", "stroke-width": 2}, g);
-    } else if (n.kind === "Fixed") {
-      el("rect", {x: x - 4, y: yBeam - 26, width: 8, height: 52, fill: "#5f6368"}, g);
-      for (let k = 0; k < 5; k++) el("line", {x1: x - 4, y1: yBeam - 22 + k * 11, x2: x - 12, y2: yBeam - 14 + k * 11, stroke: "#5f6368"}, g);
-    } else if (n.kind === "Column") {
-      el("rect", {x: x - 6, y: yBeam + 3, width: 12, height: 26, fill: "#bdc1c6", stroke: "#5f6368"}, g);
-      if (num(n.ub)) el("rect", {x: x - 6, y: yBeam - 60, width: 12, height: 57, fill: "rgba(189,193,198,0.35)", stroke: "#9aa0a6", "stroke-dasharray": "3 2"}, g);
-    } else {
-      el("circle", {cx: x, cy: yBeam, r: 5, fill: "#fff", stroke: "#9aa0a6", "stroke-width": 2}, g);
-    }
-    if (brk) el("circle", {cx: x, cy: yBeam, r: 6, fill: "#fff", stroke: "#3c4043", "stroke-width": 2}, g);
-    el("text", {x: x, y: yBeam + 58, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)"}, g,
-       `${j + 1} ${n.kind}${brk ? " (ตัด)" : ""}`);
-    el("rect", {x: x - 18, y: yBeam - 30, width: 36, height: 95, fill: "rgba(0,0,0,0)"}, g);
-    g.addEventListener("click", (ev) => openNode(j, ev));
+function drawNode(n, j) {
+  const {sx, X, yBeam} = G, x = sx(X[j]);
+  const g = el("g", {class: "node"});
+  const brk = j > 0 && j < M.spans.length && (data.allSimple || !n.cont);
+  if (selected && selected[0] === "node" && selected[1] === j + 1)
+    el("circle", {cx: x, cy: yBeam + 8, r: 18, fill: "none", stroke: "#f9ab00", "stroke-width": 2.5}, g);
+  if (n.kind === "Pin") {
+    el("path", {d: `M${x},${yBeam + 3} L${x - 11},${yBeam + 21} L${x + 11},${yBeam + 21} Z`, fill: "#f9ab00", stroke: "#3c4043"}, g);
+    el("line", {x1: x - 15, y1: yBeam + 24, x2: x + 15, y2: yBeam + 24, stroke: "#3c4043", "stroke-width": 2}, g);
+  } else if (n.kind === "Fixed") {
+    el("rect", {x: x - 4, y: yBeam - 26, width: 8, height: 52, fill: "#5f6368"}, g);
+    const d = j === 0 ? -1 : 1;
+    for (let k = 0; k < 5; k++) el("line", {x1: x + 4 * d, y1: yBeam - 22 + k * 11, x2: x + 12 * d, y2: yBeam - 14 + k * 11, stroke: "#5f6368"}, g);
+  } else if (n.kind === "Column") {
+    el("rect", {x: x - 6, y: yBeam + 3, width: 12, height: 30, fill: num(n.lb) ? "#bdc1c6" : "#fff", stroke: "#5f6368"}, g);
+    el("rect", {x: x - 6, y: yBeam - 40, width: 12, height: 37, fill: num(n.ub) ? "rgba(189,193,198,0.5)" : "rgba(0,0,0,0)", stroke: "#9aa0a6", "stroke-dasharray": "3 2"}, g);
+  } else {
+    el("circle", {cx: x, cy: yBeam, r: 5, fill: "#fff", stroke: "#9aa0a6", "stroke-width": 2}, g);
+  }
+  if (brk) el("circle", {cx: x, cy: yBeam, r: 6, fill: "#fff", stroke: "#3c4043", "stroke-width": 2}, g);
+  el("text", {x: x, y: yBeam + 52, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)"}, g, `${j + 1}`);
+  el("rect", {x: x - 14, y: yBeam - 30, width: 28, height: 86, fill: "rgba(0,0,0,0)", style: tool === "select" ? "cursor:ew-resize" : ""}, g);
+  g.addEventListener("pointerdown", (ev) => nodeDown(j, ev));
+}
+
+// ----------------------------------------------------------------- interaction
+function pt(ev) { const r = svg.getBoundingClientRect(); return {px: ev.clientX - r.left, py: ev.clientY - r.top}; }
+
+function nodeDown(j, ev) {
+  ev.stopPropagation();
+  if (pop) closePop();
+  const n = M.nodes[j], last = M.spans.length;
+  if (tool === "select") {
+    drag = {type: "node", j, px0: pt(ev).px, moved: false, before: clone(M), X: X0()};
+    svg.setPointerCapture(ev.pointerId);
+    return;
+  }
+  if (["Pin", "Fixed", "Column", "Free"].includes(tool)) {
+    commit(() => { n.kind = tool; });
+    if (tool === "Column") openNode(j, ev);
+    return;
+  }
+  if (tool === "hinge") {
+    if (j === 0 || j === last) { flash("ตัดโมเมนต์ได้เฉพาะจุดภายใน"); return; }
+    commit(() => { n.cont = !n.cont; });
+    return;
+  }
+  if (tool === "erase") {
+    if (M.spans.length <= 1) { flash("ต้องมีอย่างน้อย 1 ช่วง"); return; }
+    commit(() => { if (j === 0) removeEnd(true); else if (j === last) removeEnd(false); else mergeAt(j); });
+    return;
+  }
+  surfaceDown(ev);                    // load tools: act at the node position
+}
+
+function surfaceDown(ev) {
+  if (pop) closePop();
+  const x = snap(G.ix(pt(ev).px)), {X, tot} = G;
+  if (tool === "select") {
+    if (x < 0 || x > tot) return;
+    let i = 0; while (i < M.spans.length - 1 && x > X[i + 1]) i++;
+    openSpan(i, ev);
+    return;
+  }
+  if (["Pin", "Fixed", "Column", "Free"].includes(tool)) {
+    const near = X.findIndex(v => Math.abs(G.sx(v) - G.sx(x)) < 9);
+    if (near >= 0) { nodeDown(near, ev); return; }
+    if (x < 0 || x > tot) { extend(x, tool); return; }
+    if (tool === "Free") { flash("ปลายอิสระใช้ต่อคานยื่นที่ปลายคาน (คลิกพื้นที่เส้นประนอกปลายคาน)"); return; }
+    if (M.spans.length >= data.maxs) { flash(`ได้สูงสุด ${data.maxs} ช่วง`); return; }
+    let i = 0; while (i < M.spans.length - 1 && x > X[i + 1]) i++;
+    const a = r4(x - X[i]);
+    if (a < MIN_L || M.spans[i].L - a < MIN_L) { flash(`ช่วงสั้นเกินไป (อย่างน้อย ${MIN_L} m)`); return; }
+    commit(() => { splitSpan(i, a); M.nodes[i + 1].kind = tool; });
+    if (tool === "Column") openNode(i + 1, ev);
+    return;
+  }
+  if (x < 0 || x > tot) return;
+  if (tool === "udl") {
+    drag = {type: "udl", x1: x, x2: x};
+    svg.setPointerCapture(ev.pointerId);
+    draw();
+    return;
+  }
+  if (tool === "point") { addLoad(x, null); return; }
+  if (tool === "slab" || tool === "wall") {
+    let i = 0; while (i < M.spans.length - 1 && x > X[i + 1]) i++;
+    const s = M.spans[i];
+    openSpan(i, ev, tool === "slab"
+      ? {kind: data.slab, S: f2(s.L), t: "12", SDL: "150", LL: "200"}
+      : {kind: data.area, name: "ผนัง", S: "3", SDL: "180"});
+  }
+}
+
+svg.addEventListener("pointermove", (ev) => {
+  if (!G) return;
+  const x = snap(G.ix(pt(ev).px));
+  if (drag && drag.type === "node") {
+    const {j, X} = drag;
+    if (Math.abs(pt(ev).px - drag.px0) > 3) drag.moved = true;
+    if (!drag.moved) return;
+    const lo = j > 0 ? X[j - 1] + MIN_L : -1e9, hi = j < X.length - 1 ? X[j + 1] - MIN_L : 1e9;
+    const nx = Math.min(Math.max(x, lo), hi);
+    const B = drag.before;
+    M.spans = clone(B.spans);
+    if (j > 0) M.spans[j - 1].L = r4(nx - X[j - 1]);
+    if (j < X.length - 1) M.spans[j].L = r4(X[j + 1] - nx);
+    drag.nx = nx;
+    hover = null;
+    draw();
+    return;
+  }
+  if (drag && drag.type === "udl") { drag.x2 = Math.min(Math.max(x, 0), G.tot); draw(); return; }
+  if (!["select", "hinge", "erase"].includes(tool)) { hover = x; draw(); }
+});
+svg.addEventListener("pointerleave", () => { if (!drag && hover !== null) { hover = null; draw(); } });
+svg.addEventListener("pointerup", (ev) => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.type === "node") {
+    if (!d.moved) { openNode(d.j, ev); return; }
+    const after = clone(M.spans);
+    M = d.before;
+    commit(() => {
+      M.spans = after;
+      if (d.j > 0) clampItems(d.j);
+      if (d.j < d.X.length - 1) clampItems(d.j + 1);
+    });
+    return;
+  }
+  if (d.type === "udl") {
+    const a = Math.min(d.x1, d.x2), b = Math.max(d.x1, d.x2);
+    addLoad(a, b - a < snapv() / 2 ? null : b);
+  }
+});
+
+function eraseItems(idxs, f) {
+  commit(() => {
+    const kill = new Set(idxs);
+    M.items = M.items.flatMap((it, k) => {
+      if (!kill.has(k)) return [it];
+      const o = Object.assign({}, it, {[f]: ""});     // remove only this case of the item
+      return ["DL", "SDL", "LL", "WU"].some(g => String(o[g] ?? "").trim()) ? [o] : [];
+    });
   });
 }
 
-function closePop() { if (pop) { pop.remove(); pop = null; } selected = null; draw(); }
+document.querySelectorAll(".tb[data-tool]").forEach(b => b.onclick = () => { tool = b.dataset.tool; hover = null; if (pop) closePop(); draw(); });
+document.getElementById("undo").onclick = () => { if (!hist.length) return; fut.push(clone(M)); M = hist.pop(); sendModel(); };
+document.getElementById("redo").onclick = () => { if (!fut.length) return; hist.push(clone(M)); M = fut.pop(); sendModel(); };
+document.getElementById("reset").onclick = () => {
+  commit(() => { M.spans = [newSpan(4.0, M.spans[0])]; M.nodes = [newNode("Pin"), newNode("Pin")]; M.items = []; });
+};
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z") { ev.preventDefault(); document.getElementById(ev.shiftKey ? "redo" : "undo").click(); }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "y") { ev.preventDefault(); document.getElementById("redo").click(); }
+  if (ev.key === "Escape") { if (pop) closePop(); tool = "select"; draw(); }
+});
+document.getElementById("case").onchange = () => draw();
 
+// ----------------------------------------------------------------- popups
+function closePop() { if (pop) { pop.remove(); pop = null; } selected = null; draw(); }
 function place(div, ev) {
   const wrap = document.getElementById("wrap");
   wrap.appendChild(div);
   const r = wrap.getBoundingClientRect();
-  let left = ev.clientX - r.left + 10, topY = 20;
+  let left = ev.clientX - r.left + 10;
   if (left + div.offsetWidth > r.width - 4) left = Math.max(4, r.width - div.offsetWidth - 4);
-  div.style.left = left + "px"; div.style.top = topY + "px";
+  div.style.left = left + "px"; div.style.top = "70px";
 }
-
 function field(label, id, value, type) {
   return `<label for="${id}">${label}</label><input id="${id}" type="${type || "number"}" step="any" value="${value ?? ""}">`;
 }
 
-const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+function openLength(i, ev) {
+  if (pop) pop.remove();
+  selected = ["span", i + 1]; draw();
+  const div = document.createElement("div");
+  div.className = "pop";
+  div.innerHTML = `<h4>ความยาวช่วงที่ ${i + 1}</h4><div class="row">${field("L (m)", "L", M.spans[i].L)}</div>
+    <div style="color:var(--muted);font-size:12px">ช่วงถัดไปเลื่อนตาม (ความยาวช่วงอื่นไม่เปลี่ยน)</div>
+    <div class="btns"><button id="cancel">ยกเลิก</button><button class="primary" id="ok">ตกลง</button></div>`;
+  div.querySelector("#cancel").onclick = closePop;
+  const ok = () => {
+    const L = num(div.querySelector("#L").value);
+    if (!L || L < MIN_L) { flash(`ความยาวอย่างน้อย ${MIN_L} m`); return; }
+    pop.remove(); pop = null; selected = null;
+    commit(() => { M.spans[i].L = r4(L); clampItems(i + 1); });
+  };
+  div.querySelector("#ok").onclick = ok;
+  div.querySelector("#L").addEventListener("keydown", (e) => { if (e.key === "Enter") ok(); });
+  pop = div; place(div, ev);
+  div.querySelector("#L").select();
+}
 
 function itemCard(it) {
   const div = document.createElement("div");
@@ -191,42 +606,44 @@ function itemCard(it) {
   const render = () => {
     const kind = div.querySelector(".kind").value;
     const g = div.querySelector(".geo");
-    const unit = kind === data.point ? data.fu : (kind === data.slab || kind.startsWith("ผนัง") ? "kg/m²" : data.wu);
+    const unit = kind === data.point ? data.fu : (kind === data.slab || kind === data.area ? "kg/m²" : data.wu);
     let h = "";
     if (kind === data.slab) {
       h = `<div class="row">${inp("S", "พื้น S", it.S, "m")}${inp("L", "× L", it.L, "m")}${inp("t", "หนา", it.t, "cm")}
            <label>แบบ</label><select class="type">${opts(data.slabTypes, it.type || "อัตโนมัติ")}</select>
            <label>คานอยู่</label><select class="side">${opts(data.sides, it.side || "อัตโนมัติ")}</select></div>
            <div class="row">${inp("DL", "DL เพิ่ม", it.DL, "kg/m²")}${inp("SDL", "SDL", it.SDL, "kg/m²")}</div>
-           <div class="row">${inp("LL", "LL", it.LL, "kg/m²")}${inp("WU", "Wu", it.WU, "kg/m²")}</div>`;
+           <div class="row">${inp("LL", "LL", it.LL, "kg/m²")}${inp("WU", "Wu", it.WU, "kg/m²")}</div>
+           <div class="row">${inp("a", "a", it.a, "0")}${inp("b", "b", it.b, "L")}</div>`;
     } else {
-      h = `<div class="row">${kind.startsWith("ผนัง") ? inp("S", "สูง/กว้าง S", it.S, "m") : ""}
+      h = `<div class="row">${kind === data.area ? inp("S", "สูง/กว้าง S", it.S, "m") : ""}
            ${inp("DL", "DL", it.DL, unit)}${inp("SDL", "SDL", it.SDL, unit)}${inp("LL", "LL", it.LL, unit)}${inp("WU", "Wu", it.WU, unit)}</div>
            <div class="row">${inp("a", kind === data.point ? "ที่ a" : "a", it.a, "m")}
            ${kind === data.point ? "" : inp("b", "b", it.b, "L")}</div>`;
     }
     g.innerHTML = h;
   };
+  const rs = it.res || {};
+  const show = (f) => { const v = rs[f]; return v === undefined || v === null ? "-" : (Array.isArray(v) ? `${f2(v[0])}→${f2(v[1])}` : f2(v)); };
   div.innerHTML = `<div class="row"><input type="text" class="nm" value="${esc(it.name)}" placeholder="ชื่อรายการ">
       <select class="kind">${opts(data.kinds, it.kind || data.slab)}</select>
       <button class="del" title="ลบรายการ">✕</button></div><div class="geo"></div>
-      <div class="res ${it.err ? "err" : ""}">${it.res ? `ได้: DL ${it.res.DL || "-"} • SDL ${it.res.SDL || "-"} • LL ${it.res.LL || "-"} • Wu ${it.res.WU || "-"}` : ""}${it.note ? " — " + esc(it.note) : ""}</div>`;
+      <div class="res ${it.err ? "err" : ""}">${it.res ? `ได้: DL ${show("DL")} • SDL ${show("SDL")} • LL ${show("LL")} • Wu ${show("WU")}` : ""}${it.note ? " — " + esc(it.note) : ""}</div>`;
   div.querySelector(".kind").onchange = () => { it = collect(div); render(); };
   div.querySelector(".del").onclick = () => div.remove();
   render();
   return div;
 }
-
 function collect(div) {
   const v = (c) => { const e = div.querySelector("." + c); return e ? e.value : ""; };
   return {name: v("nm"), kind: v("kind"), S: v("S"), L: v("L"), t: v("t"), type: v("type"), side: v("side"),
           DL: v("DL"), SDL: v("SDL"), LL: v("LL"), WU: v("WU"), a: v("a"), b: v("b")};
 }
 
-function openSpan(i, ev) {
+function openSpan(i, ev, add) {
   if (pop) pop.remove();
   selected = ["span", i + 1]; draw();
-  const s = data.spans[i];
+  const s = M.spans[i];
   const div = document.createElement("div");
   div.className = "pop wide";
   div.innerHTML = `<h4>ช่วงที่ ${i + 1}</h4>
@@ -239,27 +656,36 @@ function openSpan(i, ev) {
     <button class="link" id="addPoint">+ แรงจุด</button><button class="link" id="addLine">+ น้ำหนักแผ่</button>
     <div class="btns"><button id="cancel">ยกเลิก</button><button class="primary" id="ok">ตกลง</button></div>`;
   const box = div.querySelector(".items");
-  data.items.filter(it => Number(it.span) === i + 1).forEach(it => box.appendChild(itemCard(it)));
-  const add = (kind, extra) => box.appendChild(itemCard(Object.assign({kind: kind}, extra || {})));
-  div.querySelector("#addSlab").onclick = () => add(data.slab, {t: "12", SDL: "150", LL: "200"});
-  div.querySelector("#addWall").onclick = () => add(data.kinds.find(k => k.startsWith("ผนัง")), {name: "ผนัง", S: "3", SDL: "180"});
-  div.querySelector("#addPoint").onclick = () => add(data.point, {a: f2(s.L / 2)});
-  div.querySelector("#addLine").onclick = () => add(data.kinds.find(k => k.startsWith("น้ำหนักแผ่")));
+  M.items.filter(it => Number(it.span) === i + 1).forEach(it => box.appendChild(itemCard(it)));
+  const addCard = (extra) => { const c = itemCard(Object.assign({}, extra || {})); box.appendChild(c); return c; };
+  div.querySelector("#addSlab").onclick = () => addCard({kind: data.slab, S: f2(s.L), t: "12", SDL: "150", LL: "200"});
+  div.querySelector("#addWall").onclick = () => addCard({kind: data.area, name: "ผนัง", S: "3", SDL: "180"});
+  div.querySelector("#addPoint").onclick = () => addCard({kind: data.point, a: f2(s.L / 2)});
+  div.querySelector("#addLine").onclick = () => addCard({kind: data.line});
   div.querySelector("#cancel").onclick = closePop;
   div.querySelector("#ok").onclick = () => {
     const g = (id) => div.querySelector("#" + id).value;
-    const items = [...box.querySelectorAll(".item")].map(collect);
-    setValue({type: "span", index: i + 1, nonce: Date.now() + Math.random(),
-              span: {name: g("nm"), L: num(g("L")), b: num(g("b")), h: num(g("h"))}, items: items});
-    if (pop) { pop.remove(); pop = null; }
+    const cards = [...box.querySelectorAll(".item")].map(collect)
+      .filter(it => it.kind === data.slab || ["DL", "SDL", "LL", "WU"].some(f => String(it[f] || "").trim()));
+    const L = num(g("L"));
+    pop.remove(); pop = null; selected = null;
+    commit(() => {
+      Object.assign(M.spans[i], {name: g("nm") || s.name, b: num(g("b")) || s.b, h: num(g("h")) || s.h});
+      if (L && L >= MIN_L) M.spans[i].L = r4(L);
+      M.items = M.items.filter(it => Number(it.span) !== i + 1)
+        .concat(cards.map(it => blank(Object.assign(it, {span: i + 1}))))
+        .sort((p, q) => Number(p.span) - Number(q.span));
+      clampItems(i + 1);
+    });
   };
   pop = div; place(div, ev);
+  if (add) addCard(add).scrollIntoView({block: "nearest"});
 }
 
 function openNode(j, ev) {
   if (pop) pop.remove();
   selected = ["node", j + 1]; draw();
-  const n = data.nodes[j];
+  const n = M.nodes[j];
   const kinds = ["Pin", "Fixed", "Free", "Column"].map(k => `<option ${n.kind === k ? "selected" : ""}>${k}</option>`).join("");
   const div = document.createElement("div");
   div.className = "pop";
@@ -270,20 +696,21 @@ function openNode(j, ev) {
     <div class="row"><label>เสาบน</label>${field("b", "ub", n.ub)}${field("h", "uh", n.uh)}${field("H (m)", "uH", n.uH)}</div>
     <div class="row"><label><input type="checkbox" id="cont" ${n.cont ? "checked" : ""}> คานต่อเนื่องผ่านจุดนี้</label></div>
     <div style="color:var(--muted);font-size:12px">ติ๊ก = คานต่อเนื่อง • ไม่ติ๊ก = ตัดโมเมนต์ เป็นคานเดี่ยวต่อกัน
-      (Pin อย่างเดียวยังเป็นคานต่อเนื่อง)<br>Pin = หมุนได้ • Fixed = ยึดแน่น • Free = ปลายยื่น • Column = คิด stiffness เสา 4EI/H</div>
+      (Pin อย่างเดียวยังเป็นคานต่อเนื่อง)<br>Pin = หมุนได้ • Fixed = ยึดแน่น • Free = ปลายยื่น • Column = คิด stiffness เสา 4EI/H<br>
+      c = ความกว้างเสาตามแนวคาน (ใช้หาโมเมนต์ที่ผิวเสา)</div>
     <div class="btns"><button id="cancel">ยกเลิก</button><button class="primary" id="ok">ตกลง</button></div>`;
   div.querySelector("#cancel").onclick = closePop;
   div.querySelector("#ok").onclick = () => {
     const g = (id) => num(div.querySelector("#" + id).value);
-    setValue({type: "node", index: j + 1, nonce: Date.now() + Math.random(),
-              node: {kind: div.querySelector("#kind").value, c: g("c"), lb: g("lb"), lh: g("lh"), lH: g("lH"),
-                     ub: g("ub"), uh: g("uh"), uH: g("uH"), cont: div.querySelector("#cont").checked}});
-    if (pop) { pop.remove(); pop = null; }
+    const v = {kind: div.querySelector("#kind").value, c: g("c"), lb: g("lb"), lh: g("lh"), lH: g("lH"),
+               ub: g("ub"), uh: g("uh"), uH: g("uH"), cont: div.querySelector("#cont").checked};
+    pop.remove(); pop = null; selected = null;
+    commit(() => { Object.assign(M.nodes[j], v); });
   };
   pop = div; place(div, ev);
 }
 
-window.addEventListener("resize", () => { if (data) draw(); });
+window.addEventListener("resize", () => { if (M) draw(); });
 </script>
 </body>
 </html>

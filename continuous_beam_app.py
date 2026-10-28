@@ -19,8 +19,8 @@ from continuous_beam import (
     Span, combination, design_all, min_depth, read_workbook,
 )
 from beam_loads import (
-    AREAL, KIND_HELP, KINDS, LINE, LOAD_FIELDS, POINT, SIDES, SLAB, SLAB_TYPES, TRI, items_to_loads,
-    loads_to_items, migrate_item, scale_item,
+    AREA, AREAL, KIND_HELP, KINDS, LINE, LOAD_FIELDS, POINT, SIDES, SLAB, SLAB_TYPES, TRI, items_to_loads,
+    loads_to_items, migrate_item, scale_item, evaluate, ExprError,
 )
 from beam_design import LOAD_PRESETS, TONF_TO_KN, preset_factors
 from beam_canvas import MULTI, PRESETS, beam_editor, build_preset, input_figure
@@ -131,7 +131,9 @@ def table_editor(name: str, base, key: str, **kw) -> pd.DataFrame:
 ss.setdefault("cb_unit", "t")
 ss.setdefault("cb_preset", "continuous")
 ss.setdefault("cb_preset_n", 2)
-ss.setdefault("cb_input_mode", "คลิกแล้วกรอกด้านล่าง")
+INPUT_MODES = ["วาดคานเอง (แบบ SUTStructor)", "คลิกแล้วกรอกด้านล่าง"]
+if ss.get("cb_input_mode") not in INPUT_MODES:
+    ss.cb_input_mode = INPUT_MODES[0]
 ss.setdefault("cb_sh_eq", True)
 ss.setdefault("cb_sheet_ov", {})
 ss.setdefault("cb_sh_rev", 0)
@@ -239,7 +241,7 @@ st.caption("วิเคราะห์ Direct Stiffness (เสาคิด sti
            "• หน่วย ตัน-เมตร / ksc / cm • จากไฟล์ Beam_Design_Singly_Doubly.xlsm")
 
 # --------------------------------------------------------------------------
-# Graphical input (SUTStructor style): presets, click-to-edit, popup editor
+# Graphical input (SUTStructor style): presets, drawing editor, click-to-edit
 # --------------------------------------------------------------------------
 NODE_NUM = ["c (cm)", "เสาล่าง b", "เสาล่าง h", "เสาล่าง H (m)", "เสาบน b", "เสาบน h", "เสาบน H (m)"]
 
@@ -257,12 +259,37 @@ def cur(name: str) -> pd.DataFrame:
     return ss.get(f"cb_{name}_saved", ss[f"cb_{name}"]).copy().reset_index(drop=True)
 
 
-def commit(spans=None, nodes=None, items=None):
+def commit(spans=None, nodes=None, items=None, ack=None):
+    """Replace tables; ack = nonce of the drawing-editor edit this commit answers (None = other source)."""
     for name, df in (("spans", spans), ("nodes", nodes), ("items", items)):
         if df is not None:
             ss[f"cb_{name}"] = df.reset_index(drop=True)
             ss.pop(f"cb_{name}_saved", None)
+    ss._cb_draw_ack = ack
     ss.cb_ver += 1
+
+
+def apply_drawing(val: dict):
+    """Model sent back by the drawing editor: spans, nodes and load items."""
+    f_ = lambda v: float(v) if v not in (None, "") else 0.0
+    spans_ = [Span(float(x["L"]), float(x["b"]), float(x["h"]), str(x.get("name") or "B1")) for x in val["spans"]]
+    nodes_ = [Node(str(n.get("kind") or "Pin"), f_(n.get("c")), (f_(n.get("lb")), f_(n.get("lh")), f_(n.get("lH"))),
+                   (f_(n.get("ub")), f_(n.get("uh")), f_(n.get("uH"))), bool(n.get("cont", True)))
+              for n in val["nodes"]]
+    items_ = [{f: ("" if it.get(f) is None else it.get(f)) for f in ITEM_COLS.values()} for it in val["items"]]
+    for it in items_:
+        it["span"] = int(it["span"] or 1)
+        it["kind"] = it["kind"] or LINE
+    if len(spans_) != len(cur("spans")):          # design overrides are keyed by span number
+        ss.cb_ov, ss.cb_sheet_ov = {}, {}
+    commit(spans=spans_df(spans_), nodes=nodes_df(nodes_), items=items_df(items_), ack=val["nonce"])
+
+
+def _geo(v):
+    try:
+        return evaluate(v)
+    except ExprError:
+        return None
 
 
 def cur_nodes(n_nodes: int) -> pd.DataFrame:
@@ -421,31 +448,31 @@ def draw_input(spans, nodes, items, results, loads):
     c1.button("➕ เพิ่มช่วง", on_click=add_span, width="stretch", disabled=nS_ >= MAXS)
     c2.button("➖ ลบช่วงสุดท้าย", on_click=remove_last_span, width="stretch", disabled=nS_ <= 1)
     c3.checkbox("คานเดี่ยวทุกช่วง", key="cb_allsimple", help="ไม่ต่อเนื่องที่จุดรองรับ (คานเดี่ยวต่อกัน)")
-    mode = c4.radio("วิธีกรอก", ["คลิกแล้วกรอกด้านล่าง", "กรอกบนรูป (ป๊อปอัป)"], key="cb_input_mode",
-                    horizontal=True, label_visibility="collapsed")
+    mode = c4.radio("วิธีกรอก", INPUT_MODES, key="cb_input_mode", horizontal=True, label_visibility="collapsed")
     if not nS_:
         st.info("ยังไม่มีช่วงคาน — เลือกรูปแบบคานแล้วกด 'สร้างรูปคานใหม่'")
         return
 
-    if mode.startswith("กรอกบนรูป"):
-        data = dict(spans=rows, nodes=[dict(kind=n.kind, c=n.c or None, lb=n.lower[0] or None, lh=n.lower[1] or None,
-                                            lH=n.lower[2] or None, ub=n.upper[0] or None, uh=n.upper[1] or None,
-                                            uH=n.upper[2] or None, cont=n.continuous) for n in nodes],
-                    extra=extra, wu=wu_u, fu=fu, allSimple=bool(ss.cb_allsimple),
-                    items=[dict({k: ("" if v is None else v) for k, v in it.items()},
-                                res={f: fmt_res(r, f) for f in LOAD_FIELDS},
-                                note=r.get("error") or r.get("note") or "", err=bool(r.get("error")))
-                           for it, r in zip(items, results)],
-                    kinds=KINDS, slabTypes=SLAB_TYPES, sides=SIDES, kindHelp=KIND_HELP,
-                    slab=SLAB, point=POINT)
-        val = beam_editor(data, key=f"cb_popup_{ss.cb_ver}")
+    if mode == INPUT_MODES[0]:
+        res_ = lambda r: {f: (list(r[f]) if isinstance(r[f], tuple) else r[f]) for f in LOAD_FIELDS if r.get(f) is not None}
+        data = dict(
+            model=dict(spans=[dict(name=s.name, L=s.L, b=s.b, h=s.h) for s in spans],
+                       nodes=[dict(kind=n.kind, c=n.c or None, lb=n.lower[0] or None, lh=n.lower[1] or None,
+                                   lH=n.lower[2] or None, ub=n.upper[0] or None, uh=n.upper[1] or None,
+                                   uH=n.upper[2] or None, cont=n.continuous) for n in nodes[: nS_ + 1]],
+                       items=[dict({k: ("" if v is None else v) for k, v in it.items()}, res=res_(r),
+                                   geo=dict(a=_geo(it.get("a")), b=_geo(it.get("b"))),
+                                   note=r.get("error") or r.get("note") or "", err=bool(r.get("error")))
+                              for it, r in zip(items, results)]),
+            ack=ss.get("_cb_draw_ack"), wu=wu_u, fu=fu, allSimple=bool(ss.cb_allsimple), maxs=MAXS,
+            fields=list(ITEM_COLS.values()), kinds=KINDS, slabTypes=SLAB_TYPES, sides=SIDES,
+            slab=SLAB, point=POINT, line=LINE, area=AREA)
+        val = beam_editor(data, key="cb_popup_draw")
         if val and val.get("nonce") != ss.get("_cb_nonce"):
             ss._cb_nonce = val["nonce"]
-            if val["type"] == "span":
-                update_span(int(val["index"]), val["span"], val.get("items") or [])
-            else:
-                update_node(int(val["index"]), nS_ + 1, val["node"])
-            st.rerun()
+            if val.get("type") == "model":
+                apply_drawing(val)
+                st.rerun()
         return
 
     sel = ss.get("cb_sel") or ("span", 1)
@@ -1231,11 +1258,16 @@ with tabs[5]:
    Load combination (ตามมาตรฐาน / 1.4D+1.7L / 1.2D+1.6L / กำหนดเอง), Pattern LL,
    น้ำหนักคานอัตโนมัติ — หรือ **นำเข้าไฟล์ Excel เดิม** (.xlsm) ได้ทันที
 2. แท็บ INPUT: เลือก **รูปแบบคาน** (คานเดี่ยว / ต่อเนื่อง / คานยื่น / ต่อเนื่อง + ยื่น / คานเดี่ยวต่อกัน)
-   แล้วกด "สร้างรูปคานใหม่" — เพิ่ม/ลบช่วงได้ แล้ว **กรอกบนรูปคาน** ได้ 2 แบบ (สลับได้):
+   แล้วกด "สร้างรูปคานใหม่" (หรือ ⟲ ใหม่ แล้ววาดเอง) แล้ว **กรอกบนรูปคาน** ได้ 2 แบบ (สลับได้):
+   - **วาดคานเอง (แบบ SUTStructor)** — แถบเครื่องมือเหนือรูป:
+     ▲ Pin / ▮ Fixed / ▣ เสา: คลิกบนแนวคาน = วางจุดรองรับแบ่งช่วง, คลิกพื้นที่เส้นประเลยปลายคาน = ต่อช่วงใหม่,
+     คลิกจุดเดิม = เปลี่ยนชนิด • ○ คานยื่น: คลิกเลยปลายคาน = ต่อคานยื่น • ✂ ตัด/ต่อ: ตัดโมเมนต์ที่จุด •
+     🗑 ลบ: ลบจุด (รวมช่วง) หรือลบน้ำหนัก • ✋ เลือก/ลาก: ลากจุดรองรับเปลี่ยนความยาวช่วง, คลิกตัวเลขความยาวพิมพ์ค่า,
+     คลิกช่วงแก้ขนาด/รายการน้ำหนัก, คลิกจุดแก้ขนาดเสา • ⬇ แผ่: ลากบนคาน a–b (คลิก = เต็มช่วง) • ↓ แรงจุด: คลิกตำแหน่ง •
+     ▦ พื้น / ▥ ผนัง: คลิกช่วง • เลือกกรณี DL/SDL/LL/Wu และค่า, ระยะ snap, ขนาด b×h ของช่วงใหม่ • ↶ ↷ ย้อนกลับ/ทำซ้ำ (Ctrl+Z / Ctrl+Y)
    - คลิกแล้วกรอกด้านล่าง: คลิกช่วงหรือจุดรองรับบนรูป แล้วกรอกขนาดคานและรายการน้ำหนักในกล่องใต้รูป
    - จุดรองรับ: คลิกที่จุดบนรูปเพื่อเปลี่ยน Pin / Fixed / Free / Column และเลือก "ต่อเนื่อง" หรือ "ตัดโมเมนต์"
      (Pin อย่างเดียวยังเป็นคานต่อเนื่อง — ต้องเลือกตัดโมเมนต์จึงเป็นคานเดี่ยวต่อกัน)
-   - กรอกบนรูป (ป๊อปอัป): คลิกบนรูปแล้วกรอกในกล่องที่เด้งขึ้นบนรูปเลย
    ตารางแบบ Excel ยังเปิดได้ที่ "ข้อมูลละเอียดแบบตาราง" (แก้ข้อมูลชุดเดียวกัน)
    - คานเดี่ยว: 1 ช่วง จุด 1 = Pin, จุด 2 = Pin • คานยื่นอย่างเดียว: 1 ช่วง จุด 1 = Fixed (หรือ Column), จุด 2 = Free
    - คานต่อเนื่อง: ≥ 2 ช่วง • คานต่อเนื่อง + คานยื่น: ให้จุดปลายเป็น Free
