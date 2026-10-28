@@ -19,8 +19,8 @@ from continuous_beam import (
     Span, combination, design_all, min_depth, read_workbook,
 )
 from beam_loads import (
-    AREAL, KIND_HELP, KINDS, LINE, POINT, SIDES, SLAB, SLAB_TYPES, TRI, items_to_loads, loads_to_items,
-    scale_item,
+    AREAL, KIND_HELP, KINDS, LINE, LOAD_FIELDS, POINT, SIDES, SLAB, SLAB_TYPES, TRI, items_to_loads,
+    loads_to_items, migrate_item, scale_item,
 )
 from beam_design import LOAD_PRESETS, TONF_TO_KN, preset_factors
 from beam_canvas import MULTI, PRESETS, beam_editor, build_preset, input_figure
@@ -59,12 +59,13 @@ def spans_df(spans):
 
 # load items under each span: table column -> item field (values are text, formulas allowed)
 ITEM_COLS = {"ช่วงที่": "span", "รายการ": "name", "ชนิด": "kind", "S (m)": "S", "L (m)": "L",
-             "หนา t (cm)": "t", "แบบพื้น": "type", "คานอยู่ด้าน": "side", "DL": "DL", "LL": "LL",
+             "หนา t (cm)": "t", "แบบพื้น": "type", "คานอยู่ด้าน": "side", "DL": "DL", "SDL": "SDL", "LL": "LL",
              "Wu (ประลัย)": "WU", "a (m)": "a", "b (m)": "b"}
 ITEM_TEXT = [c for c in ITEM_COLS if c not in ("ช่วงที่",)]
 
 
 def items_df(items: list[dict]) -> pd.DataFrame:
+    items = [migrate_item(it) for it in items]
     df = pd.DataFrame([{col: (it.get(f) if f != "span" else int(it.get("span") or 1)) for col, f in ITEM_COLS.items()}
                        for it in items], columns=list(ITEM_COLS))
     for c in ITEM_TEXT:
@@ -97,6 +98,7 @@ def nodes_df(nodes):
 
 def load_state(settings: Settings, spans, nodes, loads, overrides, project=None, items=None):
     ss.cb_lc, ss.cb_fD, ss.cb_fL = "code", 1.4, 1.7
+    ss.cb_sdl_same, ss.cb_fSD = True, 1.4
     for f, k in SET_KEYS.items():
         v = getattr(settings, f)
         ss[k] = int(v) if f in ("stir", "db", "legs") else v   # selectbox options are ints
@@ -133,6 +135,8 @@ ss.setdefault("cb_input_mode", "คลิกแล้วกรอกด้าน
 ss.setdefault("cb_sh_eq", True)
 ss.setdefault("cb_sheet_ov", {})
 ss.setdefault("cb_sh_rev", 0)
+ss.setdefault("cb_sdl_same", True)
+ss.setdefault("cb_fSD", 1.4)
 ss.setdefault("cb_sh_rlim", 2.0)
 ss.setdefault("cb_sh_cmin", 6.0)
 if "cb_spans" not in ss:
@@ -183,11 +187,17 @@ with st.sidebar:
     st.selectbox("มาตรฐาน (φ, ρmax)", CODES, key="cb_code")
     st.selectbox("Load combination", list(LOAD_PRESETS), format_func=LOAD_PRESETS.get, key="cb_lc",
                  help="ตามมาตรฐาน = ตามตัวเลือกด้านบน (ACI 318-99 → 1.4D+1.7L, ACI 318-19 → 1.2D+1.6L) "
-                      "• ตรวจ 1.4DL เพิ่มเสมอ")
+                      "• ตรวจ 1.4(DL + SDL) เพิ่มเสมอ")
     if ss.cb_lc == "custom":
         c1, c2 = st.columns(2)
         c1.number_input("ตัวคูณ DL", 1.0, 2.0, step=0.05, key="cb_fD")
         c2.number_input("ตัวคูณ LL", 1.0, 2.5, step=0.05, key="cb_fL")
+    c1, c2 = st.columns([1.3, 1])
+    c1.checkbox("SDL ใช้ตัวคูณเดียวกับ DL", key="cb_sdl_same",
+                help="SDL = น้ำหนักบรรทุกคงที่เพิ่มเติม (วัสดุปูผิว ฝ้า งานระบบ ผนัง) แยกจาก DL (น้ำหนักคาน + พื้น) "
+                     "— ปกติใช้ตัวคูณเดียวกับ DL; เอาออกเพื่อกำหนดตัวคูณ SDL เอง")
+    if not ss.cb_sdl_same:
+        c2.number_input("ตัวคูณ SDL", 1.0, 2.5, step=0.05, key="cb_fSD")
     c1, c2 = st.columns(2)
     c1.checkbox("คิด Pattern LL", key="cb_pattern")
     c2.checkbox("รวมน้ำหนักคาน", key="cb_sw")
@@ -215,7 +225,8 @@ with st.sidebar:
 
 sett = Settings(**{f: ss[k] for f, k in SET_KEYS.items()})
 sett = Settings(**{**sett.__dict__, "legs": int(sett.legs), "stir": float(sett.stir), "db": float(sett.db),
-                   "load_factors": preset_factors(ss.cb_lc, (ss.cb_fD, ss.cb_fL))})
+                   "load_factors": preset_factors(ss.cb_lc, (ss.cb_fD, ss.cb_fL)),
+                   "sdl_factor": None if ss.cb_sdl_same else float(ss.cb_fSD)})
 
 U = TONF_TO_KN if ss.cb_unit == "kN" else 1.0          # t -> display unit
 fu, mu, wu_u = ("kN", "kN-m", "kN/m") if ss.cb_unit == "kN" else ("t", "t-m", "t/m")
@@ -312,7 +323,7 @@ def update_span(i: int, vals: dict, items: list[dict]):
     for x in items:
         x = {f: x.get(f, "") for f in ITEM_COLS.values()} | {"span": i}
         x = {k: ("" if v is None else v) for k, v in x.items()}
-        if any(str(x.get(f) or "").strip() for f in ("DL", "LL", "WU")) or x.get("kind") == SLAB:
+        if any(str(x.get(f) or "").strip() for f in LOAD_FIELDS) or x.get("kind") == SLAB:
             new.append(x)
     allitems = sorted(keep + new, key=lambda x: x["span"])
     commit(spans=sp, items=items_df(allitems))
@@ -328,15 +339,15 @@ def update_node(j: int, n_nodes: int, v: dict):
 
 
 def drawing_loads(spans, loads):
-    """Loads in the display unit for the drawings: per span full-span totals (DL, LL, WU)
+    """Loads in the display unit for the drawings: per span full-span totals (DL, SDL, LL, WU)
     and the other loads (partial / triangle / point)."""
     rows, extra = [], []
     for i, s in enumerate(spans, 1):
-        tot = {"DL": 0.0, "LL": 0.0, "WU": 0.0}
+        tot = {"DL": 0.0, "SDL": 0.0, "LL": 0.0, "WU": 0.0}
         for ld in loads:
             if ld.span != i:
                 continue
-            key = {"DL": "DL", "LL": "LL", "U": "WU"}[ld.case]
+            key = {"DL": "DL", "SDL": "SDL", "LL": "LL", "U": "WU"}[ld.case]
             w2 = ld.w1 if ld.w2 is None else ld.w2
             full = (ld.kind == "UDL" and abs(w2 - ld.w1) < 1e-12 and (ld.a or 0) <= 1e-9
                     and (ld.b is None or abs(ld.b - s.L) < 1e-9))
@@ -346,7 +357,7 @@ def drawing_loads(spans, loads):
                 extra.append(dict(span=i, case=key, kind="Point" if ld.kind == "Point" else "UDL",
                                   w1=ld.w1 * U, w2=w2 * U, a=ld.a, b=ld.b))
         rows.append(dict(name=s.name, L=s.L, b=s.b, h=s.h,
-                         DL=tot["DL"] or None, LL=tot["LL"] or None, WU=tot["WU"] or None))
+                         DL=tot["DL"] or None, SDL=tot["SDL"] or None, LL=tot["LL"] or None, WU=tot["WU"] or None))
     return rows, extra
 
 
@@ -364,7 +375,8 @@ def items_results_df(items, results) -> pd.DataFrame:
     for it, res in zip(items, results):
         unit = fu if it["kind"] == POINT else wu_u
         rows.append({"ช่วง": it["span"], "รายการ": it.get("name") or it["kind"],
-                     f"DL ({unit})": fmt_res(res, "DL"), f"LL ({unit})": fmt_res(res, "LL"),
+                     f"DL ({unit})": fmt_res(res, "DL"), f"SDL ({unit})": fmt_res(res, "SDL"),
+                     f"LL ({unit})": fmt_res(res, "LL"),
                      f"Wu ({unit})": fmt_res(res, "WU"),
                      "หมายเหตุ": res.get("error") or res.get("note") or ""})
     return pd.DataFrame(rows)
@@ -382,8 +394,10 @@ ITEM_COLCFG = {
                                                 help="อัตโนมัติ: L/S ≥ 2 → One-way, น้อยกว่า → Two-way"),
     "คานอยู่ด้าน": st.column_config.SelectboxColumn(options=SIDES, default="อัตโนมัติ",
                                                    help="อัตโนมัติ: เทียบความยาวช่วงคานกับด้านของพื้น"),
-    "DL": st.column_config.TextColumn(help="พื้น: SDL เพิ่ม (kg/m²) • ผนัง: kg/m² • แผ่: ต่อเมตร • จุด: แรง "
-                                           "— พิมพ์สูตรได้ เช่น 2400*0.12+150"),
+    "DL": st.column_config.TextColumn(help="น้ำหนักบรรทุกคงที่ • พื้น: น้ำหนักพื้น γc·t คิดให้เอง ช่องนี้ = DL เพิ่ม (kg/m²) "
+                                           "• ผนัง: kg/m² • แผ่: ต่อเมตร • จุด: แรง — พิมพ์สูตรได้ เช่น 2400*0.12"),
+    "SDL": st.column_config.TextColumn(help="น้ำหนักบรรทุกคงที่เพิ่มเติม (วัสดุปูผิว ฝ้า งานระบบ ผนัง) หน่วยเดียวกับ DL "
+                                            "— แยกกรณีจาก DL, ตัวคูณตั้งได้ที่แถบซ้าย • พิมพ์สูตรได้ เช่น 50+30+20"),
     "LL": st.column_config.TextColumn(help="น้ำหนักจร (หน่วยเดียวกับ DL) — พิมพ์สูตรได้"),
     "Wu (ประลัย)": st.column_config.TextColumn(help="น้ำหนักที่คูณตัวคูณแล้ว แบบ Excel เช่น "
                                                     "=(1.4*(2400*0.3+150)+1.7*400)*3.45/3/1000 — ไม่คิด pattern"),
@@ -419,7 +433,7 @@ def draw_input(spans, nodes, items, results, loads):
                                             uH=n.upper[2] or None, cont=n.continuous) for n in nodes],
                     extra=extra, wu=wu_u, fu=fu, allSimple=bool(ss.cb_allsimple),
                     items=[dict({k: ("" if v is None else v) for k, v in it.items()},
-                                res={f: fmt_res(r, f) for f in ("DL", "LL", "WU")},
+                                res={f: fmt_res(r, f) for f in LOAD_FIELDS},
                                 note=r.get("error") or r.get("note") or "", err=bool(r.get("error")))
                            for it, r in zip(items, results)],
                     kinds=KINDS, slabTypes=SLAB_TYPES, sides=SIDES, kindHelp=KIND_HELP,
@@ -482,8 +496,9 @@ def draw_input(spans, nodes, items, results, loads):
         if mine:
             st.dataframe(items_results_df([m[0] for m in mine], [m[1] for m in mine]),
                          hide_index=True, width="stretch")
-        tot = {k: r.get(k) for k in ("DL", "LL", "WU")}
-        st.caption(f"รวมน้ำหนักแผ่เต็มช่วง (ไม่รวมน้ำหนักคาน): DL {tot['DL'] or 0:.3f} • LL {tot['LL'] or 0:.3f} • "
+        tot = {k: r.get(k) for k in LOAD_FIELDS}
+        st.caption(f"รวมน้ำหนักแผ่เต็มช่วง (ไม่รวมน้ำหนักคาน): DL {tot['DL'] or 0:.3f} • SDL {tot['SDL'] or 0:.3f} • "
+                   f"LL {tot['LL'] or 0:.3f} • "
                    f"Wu {tot['WU'] or 0:.3f} {wu_u}")
     else:
         j = sel[1]
@@ -575,7 +590,8 @@ with tabs[0]:
         loads, results, load_errors = items_to_loads(items, spans, U, sett.gc)
         if items:
             st.dataframe(items_results_df(items, results), hide_index=True, width="stretch")
-        st.caption("ทุกช่องพิมพ์สูตรได้ (+ − * / ^ วงเล็บ) • DL, LL = น้ำหนักใช้งาน (โปรแกรมคูณตัวคูณและคิด Pattern LL) "
+        st.caption("ทุกช่องพิมพ์สูตรได้ (+ − * / ^ วงเล็บ) • DL, SDL, LL = น้ำหนักใช้งาน (โปรแกรมคูณตัวคูณและคิด Pattern LL; "
+                   "SDL = วัสดุปูผิว/ฝ้า/งานระบบ/ผนัง แยกจาก DL) "
                    "• Wu = น้ำหนักประลัยที่คูณแล้ว (บวกเข้าตรง ๆ ไม่คิด pattern) • น้ำหนักคานคิดให้อัตโนมัติ")
 
     with draw_area:
@@ -757,12 +773,19 @@ def span_diagram(cmb: dict) -> go.Figure:
 with tabs[1]:
     st.markdown("##### แผนภาพรายช่วง — น้ำหนัก แรงปฏิกิริยา แรงเฉือน และโมเมนต์")
     has_wu = any(ld.case == "U" for ld in loads)
-    cases = {f"Factored: {sett.fD:g}DL + {sett.fL:g}LL" + (" + Wu" if has_wu else ""): (sett.fD, sett.fL, 1.0),
-             "Service: DL + LL": (1.0, 1.0, 0.0), "DL": (1.0, 0.0, 0.0), "LL": (0.0, 1.0, 0.0)}
+    has_sdl = any(ld.case == "SDL" for ld in loads)
+    sdl_txt = f" + {sett.fSD:g}SDL" if has_sdl else ""
+    cases = {f"Factored: {sett.fD:g}DL{sdl_txt} + {sett.fL:g}LL" + (" + Wu" if has_wu else ""):
+             dict(a=sett.fD, sd=sett.fSD, b=sett.fL, u=1.0),
+             "Service: DL" + (" + SDL" if has_sdl else "") + " + LL": dict(a=1.0, sd=1.0, b=1.0, u=0.0),
+             "DL": dict(a=1.0, sd=0.0, b=0.0, u=0.0)}
+    if has_sdl:
+        cases["SDL"] = dict(a=0.0, sd=1.0, b=0.0, u=0.0)
+    cases["LL"] = dict(a=0.0, sd=0.0, b=1.0, u=0.0)
     if has_wu:
-        cases["Wu (ประลัยที่กรอก)"] = (0.0, 0.0, 1.0)
+        cases["Wu (ประลัยที่กรอก)"] = dict(a=0.0, sd=0.0, b=0.0, u=1.0)
     case = st.radio("กรณีน้ำหนัก (LL เต็มทุกช่วง)", list(cases), horizontal=True, key="cb_diag_case")
-    cmb = combination(model, *cases[case]) if case in cases else combination(model, *next(iter(cases.values())))
+    cmb = combination(model, **(cases[case] if case in cases else next(iter(cases.values()))))
     st.plotly_chart(span_diagram(cmb), width="stretch")
     st.dataframe(clean(pd.DataFrame([{
         "ช่วง": sp["span"], "L (m)": sp["L"], f"W ({wu_u})": r2(sp["udl"] * U) if sp["udl"] else None,
@@ -773,13 +796,13 @@ with tabs[1]:
     st.markdown("**แรงปฏิกิริยา:** " + " • ".join(f"Ry{r['node']} = {r2(r['R'] * U):.2f} {fu}"
                                                  for r in cmb["reactions"] if r["kind"] != "FREE"))
     if has_wu and not case.startswith(("Factored", "Wu")):
-        st.caption("กรณีนี้ไม่รวมน้ำหนัก Wu ที่กรอกแบบประลัย (แยก DL/LL ไม่ได้)")
+        st.caption("กรณีนี้ไม่รวมน้ำหนัก Wu ที่กรอกแบบประลัย (แยก DL/SDL/LL ไม่ได้)")
     st.caption("W = น้ำหนักแผ่เต็มช่วงรวม (รวมน้ำหนักคานเมื่อเลือก) คูณตัวคูณของกรณีที่เลือก • แผนภาพนี้วาง LL ทุกช่วงพร้อมกัน "
                "— ค่าออกแบบใช้ envelope (Pattern LL) ด้านล่าง • M บวก = ท้องคานรับแรงดึง")
     st.divider()
     st.markdown(f"##### Envelope สำหรับออกแบบ ({mu}, {fu})")
-    st.caption(f"Factored envelope = max/min ของ {sett.fD}DL + {sett.fL}LL "
-               f"{'(pattern ทีละช่วง)' if sett.pattern else '(LL เต็มทุกช่วง)'} และ 1.4DL • "
+    st.caption(f"Factored envelope = max/min ของ {sett.fD:g}DL{sdl_txt} + {sett.fL:g}LL "
+               f"{'(pattern ทีละช่วง)' if sett.pattern else '(LL เต็มทุกช่วง)'} และ 1.4(DL{' + SDL' if has_sdl else ''}) • "
                "M บวก = ท้องคานรับแรงดึง • M ที่ผิวเสา (x = c/2) • Vu ที่ระยะ d จากผิวเสา")
     sdf = pd.DataFrame([{
         "ช่วง": s["span"], "L (m)": s["L"], "b×h (cm)": f"{s['b']:g}×{s['h']:g}", "ประเภท": s["type"],
@@ -821,6 +844,7 @@ with tabs[1]:
     st.markdown("##### แรงปฏิกิริยาที่จุดรองรับ")
     st.dataframe(clean(pd.DataFrame([{
         "จุด": r["node"], "X (m)": r["X"], "ชนิด": r["kind"], f"R จาก DL ({fu})": r["RD"] * U,
+        **({f"R จาก SDL ({fu})": r["RSD"] * U} if has_sdl else {}),
         f"R จาก LL ({fu})": r["RL"] * U, f"Ru max ({fu})": r["Ru_max"] * U, f"Ru min ({fu})": r["Ru_min"] * U,
         f"Mu เข้าเสา max ({mu})": r["Mu_max"] * U, f"Mu เข้าเสา min ({mu})": r["Mu_min"] * U}
         for r in reactions])).style.format(precision=2),
@@ -1219,10 +1243,12 @@ with tabs[5]:
      (ห้ามตัดที่จุดโคนคานยื่น มิฉะนั้นโครงสร้างไม่เสถียร)
    - Column: คิด stiffness เสาบน/ล่าง (4EI/H, ปลายไกลยึดแน่น) ถ้าไม่ใส่ขนาดเสา จะเท่ากับ Pin
 3. น้ำหนักใต้คาน: คลิกช่วงคานแล้วเพิ่ม **รายการน้ำหนัก** ได้ไม่จำกัด (ทุกช่องพิมพ์สูตรได้ เช่น 2400*0.12+150)
-   - **พื้น**: กรอกขนาดพื้น S × L, ความหนา, SDL, LL (kg/m²) → โปรแกรมคิดน้ำหนักพื้น, เลือก One-way (L/S ≥ 2) /
+   - **พื้น**: กรอกขนาดพื้น S × L, ความหนา, SDL, LL (kg/m²) → โปรแกรมคิดน้ำหนักพื้น (เป็น DL), เลือก One-way (L/S ≥ 2) /
      Two-way และด้านที่คานรองรับให้อัตโนมัติ (หรือเลือกเอง) แล้วใช้ wS/2, wS/3, wS/3·(3−m²)/2 • พื้นสองข้างคาน = 2 รายการ
    - **ผนัง / กว้างรับ** (kg/m² × สูง) • **น้ำหนักแผ่** (ต่อเมตร, ระบุ a–b ได้) • **สามเหลี่ยม/คางหมู** (w1;w2) • **แรงจุด** ที่ a
-   - DL / LL = น้ำหนักใช้งาน (โปรแกรมคูณตัวคูณและคิด Pattern LL) • Wu = น้ำหนักประลัยที่คูณแล้วแบบ Excel
+   - DL / SDL / LL = น้ำหนักใช้งาน (โปรแกรมคูณตัวคูณและคิด Pattern LL) • Wu = น้ำหนักประลัยที่คูณแล้วแบบ Excel
+   - **DL** = น้ำหนักโครงสร้าง (คาน พื้น — คิดให้อัตโนมัติ) • **SDL** = น้ำหนักบรรทุกคงที่เพิ่มเติม (วัสดุปูผิว ฝ้า
+     งานระบบ ผนัง) แยกกรณีไว้ แสดงแยกในแผนภาพ/แรงปฏิกิริยา • ตัวคูณ SDL = ตัวคูณ DL (ตั้งเองได้ที่แถบซ้าย)
    - น้ำหนักคานคิดให้อัตโนมัติ • เลือกหน่วยแรง ตัน หรือ kN ที่แถบซ้าย
    • แท็บ ANALYSIS มีแผนภาพรายช่วง (W, Ry, SFD, BMD พร้อมค่า) แบบรายการคำนวณมือ
 4. **ไม่ต้องกด RUN** — วิเคราะห์ใหม่อัตโนมัติทุกครั้งที่แก้ข้อมูล
@@ -1238,7 +1264,7 @@ with tabs[5]:
 
 **หลักการคำนวณ**
 - วิเคราะห์ด้วย Direct Stiffness Method (2 DOF/จุด) — เท่ากับ Moment Distribution ของ SUTStructor แต่ไม่ต้องวนรอบ
-- Pattern LL: วิเคราะห์ LL ทีละช่วง แล้วรวมเฉพาะส่วนที่เพิ่มค่าสูงสุด/ต่ำสุดในแต่ละจุด และตรวจ 1.4DL ด้วย
+- Pattern LL: วิเคราะห์ LL ทีละช่วง แล้วรวมเฉพาะส่วนที่เพิ่มค่าสูงสุด/ต่ำสุดในแต่ละจุด และตรวจ 1.4(DL + SDL) ด้วย
 - โมเมนต์ลบออกแบบที่ผิวเสา (x = c/2), แรงเฉือนออกแบบที่ระยะ d จากผิวเสา, โซนกลาง = Vu สูงสุดในช่วง L/4–3L/4
 - ดัด: ρmax = 0.75ρb (ACI 318-99) หรือที่ εt = 0.005 (ACI 318-19). ถ้า Mu > φMn(ρmax) → Doubly:
   As = ρmax·b·d + M2/(fy(d−d')), As' = M2/((fs'−0.85fc')(d−d')), fs' จาก strain compatibility

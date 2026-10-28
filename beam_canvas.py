@@ -7,7 +7,7 @@
                  on the beam itself), see components/beam_editor/index.html
 
 Spans / loads here are plain dicts in the *display* force unit
-(span: name, L, b, h, DL, LL; extra load: span, case, kind, w1, w2, a, b).
+(span: name, L, b, h, DL, SDL, LL; extra load: span, case, kind, w1, w2, a, b).
 """
 from __future__ import annotations
 
@@ -61,9 +61,10 @@ def _num(v):
     return None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
 
 
-DL_C, LL_C, WU_C, PT_C = "#188038", "#1a73e8", "#9334e6", "#e37400"
-CASE_C = {"DL": DL_C, "LL": LL_C, "WU": WU_C}
-CASE_FILL = {"DL": "rgba(24,128,56,0.08)", "LL": "rgba(26,115,232,0.08)", "WU": "rgba(147,52,230,0.08)"}
+DL_C, SDL_C, LL_C, WU_C, PT_C = "#188038", "#8d6e00", "#1a73e8", "#9334e6", "#e37400"
+CASE_C = {"DL": DL_C, "SDL": SDL_C, "LL": LL_C, "WU": WU_C}
+CASE_FILL = {"DL": "rgba(24,128,56,0.08)", "SDL": "rgba(141,110,0,0.08)", "LL": "rgba(26,115,232,0.08)",
+             "WU": "rgba(147,52,230,0.08)"}
 
 
 def input_figure(spans: list[dict], nodes: list[Node], extra: list[dict], wu_u: str, fu: str,
@@ -81,7 +82,7 @@ def input_figure(spans: list[dict], nodes: list[Node], extra: list[dict], wu_u: 
     for s in spans:
         X0.append(X0[-1] + s["L"])
     total = X0[-1] or 1.0
-    wmax = max([abs(_num(s.get(k)) or 0) for s in spans for k in ("DL", "LL", "WU")] +
+    wmax = max([abs(_num(s.get(k)) or 0) for s in spans for k in ("DL", "SDL", "LL", "WU")] +
                [max(abs(_num(e.get("w1")) or 0), abs(_num(e.get("w2")) or 0)) for e in extra
                 if e.get("kind") != "Point"] + [1e-9])
 
@@ -102,7 +103,7 @@ def input_figure(spans: list[dict], nodes: list[Node], extra: list[dict], wu_u: 
         fig.add_annotation(x=xm, y=-0.42, text=f"<b>ช่วง {i}</b> {s['L']:.2f} m • {s['b']:g}×{s['h']:g}",
                            showarrow=False, font=dict(size=12, color="#3c4043"))
         top = 0.06
-        for key, color in (("DL", DL_C), ("LL", LL_C), ("WU", WU_C)):
+        for key, color in (("DL", DL_C), ("SDL", SDL_C), ("LL", LL_C), ("WU", WU_C)):
             w = _num(s.get(key)) or 0.0
             if w == 0:
                 continue
