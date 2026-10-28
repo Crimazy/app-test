@@ -7,8 +7,10 @@ SUTStructor beam module):
                 Pin / Fixed / Free / Column (rotational spring 4EI/H of the
                 columns above and below, far ends fixed), moment release at
                 nodes ("simple beams in series").
-  * Loads     : DL on all spans, LL on each span separately -> exact
-                pattern-LL envelope (sum of +ve / -ve parts) and 1.4DL.
+  * Loads     : DL (beam + slab weight) and SDL (superimposed dead load, own
+                factor, default = DL factor) on all spans, LL on each span
+                separately -> exact pattern-LL envelope (sum of +ve / -ve
+                parts) and 1.4(DL + SDL).
   * Design    : 3 locations per span (left / mid / right), automatic singly /
                 doubly reinforcement, strain-compatibility capacity check of
                 the bars provided, stirrups.
@@ -52,6 +54,7 @@ class Settings:
     db: float = 20.0           # mm, default main bar
     all_simple: bool = False
     load_factors: tuple | None = None   # (fD, fL); None = follow the code
+    sdl_factor: float | None = None     # factor of SDL; None = same as DL
 
     @property
     def is99(self) -> bool:
@@ -62,6 +65,10 @@ class Settings:
         if self.load_factors:
             return self.load_factors[0]
         return 1.4 if self.is99 else 1.2
+
+    @property
+    def fSD(self) -> float:
+        return self.fD if self.sdl_factor is None else self.sdl_factor
 
     @property
     def fL(self) -> float:
@@ -125,7 +132,7 @@ class Node:
 @dataclass(frozen=True)
 class Load:
     span: int                  # 1-based
-    case: str = "DL"           # DL / LL / U (already factored, Excel style)
+    case: str = "DL"           # DL / SDL / LL / U (already factored, Excel style)
     kind: str = "UDL"          # UDL / Point
     w1: float = 0.0            # t/m or P (t)
     w2: float | None = None    # t/m (None = w1)
@@ -177,7 +184,7 @@ def _gauss(A, b):
 @dataclass
 class _Ld:
     span: int
-    case: int                  # 0 = DL, 1 = LL
+    case: int                  # 0 = DL, 1 = LL, 2 = U, 3 = SDL
     kind: int                  # 1 = distributed, 2 = point
     w1: float
     w2: float
@@ -232,7 +239,7 @@ class BeamModel:
             if sp < 1 or sp > nS:
                 raise InputError(f"น้ำหนักแถว {r}: หมายเลขช่วงไม่ถูกต้อง")
             L = spans[sp - 1].L
-            case = {"LL": 1, "U": 2}.get(str(ld.case).strip().upper(), 0)
+            case = {"LL": 1, "U": 2, "SDL": 3}.get(str(ld.case).strip().upper(), 0)
             if str(ld.kind).strip().upper() == "POINT":
                 a = L / 2 if ld.a is None else ld.a
                 if a < 0 or a > L + 1e-6:
@@ -250,10 +257,12 @@ class BeamModel:
                 w = st.gc * s.b / 100 * s.h / 100
                 self.loads.append(_Ld(i, 0, 1, w, w, 0.0, s.L))
 
-        # element end forces per case c (0 = DL, k = LL on span k, -1 = factored loads U)
+        # element end forces per case c (0 = DL, k = LL on span k, -1 = factored loads U, -2 = SDL)
         self.EV, self.EM, self.ER, self.EMR = {}, {}, {}, {}
         self.has_u = any(ld.case == 2 for ld in self.loads)
-        for c in range(-1 if self.has_u else 0, nS + 1):
+        self.has_sdl = any(ld.case == 3 for ld in self.loads)
+        cases = ([-2] if self.has_sdl else []) + ([-1] if self.has_u else []) + list(range(0, nS + 1))
+        for c in cases:
             if not self._solve(c):
                 raise InputError("โครงสร้างไม่เสถียร — ตรวจจุดรองรับ (คานเดี่ยวต้องมี 2 จุดรองรับ; "
                                  "คานยื่นต้องต่อเนื่องกับช่วงข้างเคียง)")
@@ -262,6 +271,8 @@ class BeamModel:
     def _in_case(self, ld: _Ld, c: int) -> bool:
         if c == -1:
             return ld.case == 2
+        if c == -2:
+            return ld.case == 3
         return ld.case == 0 if c == 0 else (ld.case == 1 and ld.span == c)
 
     def _ke(self, s: int):
@@ -370,27 +381,31 @@ class BeamModel:
                 v -= self._load_left(ld, x)[0]
         return v
 
-    def _envelope(self, dl: float, llv: list[float], u: float = 0.0):
+    def _envelope(self, dl: float, llv: list[float], u: float = 0.0, sdl: float = 0.0):
         """Factored envelope; u = effect of loads entered already factored (added as is)."""
-        fD, fL = self.st.fD, self.st.fL
+        fD, fL, fSD = self.st.fD, self.st.fL, self.st.fSD
+        dead = fD * dl + fSD * sdl
         if self.st.pattern:
-            emax = fD * dl + fL * sum(v for v in llv if v > 0)
-            emin = fD * dl + fL * sum(v for v in llv if v <= 0)
+            emax = dead + fL * sum(v for v in llv if v > 0)
+            emin = dead + fL * sum(v for v in llv if v <= 0)
         else:
-            emax = emin = fD * dl + fL * sum(llv)
-        e14 = 1.4 * dl
+            emax = emin = dead + fL * sum(llv)
+        e14 = 1.4 * (dl + sdl)
         return max(emax, e14) + u, min(emin, e14) + u
 
     def _u(self, fn, s: int, x: float) -> float:
         return fn(-1, s, x) if self.has_u else 0.0
 
+    def _sd(self, fn, s: int, x: float) -> float:
+        return fn(-2, s, x) if self.has_sdl else 0.0
+
     def env_M(self, s: int, x: float):
         return self._envelope(self.M(0, s, x), [self.M(k, s, x) for k in range(1, self.nS + 1)],
-                              self._u(self.M, s, x))
+                              self._u(self.M, s, x), self._sd(self.M, s, x))
 
     def env_V(self, s: int, x: float):
         return self._envelope(self.V(0, s, x), [self.V(k, s, x) for k in range(1, self.nS + 1)],
-                              self._u(self.V, s, x))
+                              self._u(self.V, s, x), self._sd(self.V, s, x))
 
     # -- results ------------------------------------------------------------
     def span_type(self, s: int) -> str:
@@ -463,12 +478,14 @@ class BeamModel:
             rD = self._node_sum(self.EV, self.ER, 0, j)
             llv = [self._node_sum(self.EV, self.ER, k, j) for k in range(1, self.nS + 1)]
             rU = self._node_sum(self.EV, self.ER, -1, j) if self.has_u else 0.0
-            rmx, rmn = self._envelope(rD, llv, rU)
+            rS = self._node_sum(self.EV, self.ER, -2, j) if self.has_sdl else 0.0
+            rmx, rmn = self._envelope(rD, llv, rU, rS)
             mD = self._node_sum(self.EM, self.EMR, 0, j)
             mll = [self._node_sum(self.EM, self.EMR, k, j) for k in range(1, self.nS + 1)]
             mU = self._node_sum(self.EM, self.EMR, -1, j) if self.has_u else 0.0
-            mmx, mmn = self._envelope(mD, mll, mU)
-            out.append(dict(node=j, X=self.X0[j - 1], kind=self.kind[j - 1], RD=rD, RL=sum(llv), RU=rU,
+            mS = self._node_sum(self.EM, self.EMR, -2, j) if self.has_sdl else 0.0
+            mmx, mmn = self._envelope(mD, mll, mU, mS)
+            out.append(dict(node=j, X=self.X0[j - 1], kind=self.kind[j - 1], RD=rD, RSD=rS, RL=sum(llv), RU=rU,
                             Ru_max=rmx, Ru_min=rmn, Mu_max=mmx, Mu_min=mmn))
         return out
 
@@ -819,9 +836,11 @@ def read_workbook(fp) -> dict:
 # Single load combination a·DL + b·LL with LL on all spans (diagram like a
 # hand calculation: loads, reactions, SFD, BMD with values per span)
 # --------------------------------------------------------------------------
-def combination(m: BeamModel, a: float, b: float, u: float = 0.0, ndiv: int = 80) -> dict:
-    """Internal forces for a·DL + b·LL (LL on every span) + u·(loads entered already factored)."""
-    fac = lambda case: a if case == 0 else (b if case == 1 else u)
+def combination(m: BeamModel, a: float, b: float, u: float = 0.0, ndiv: int = 80, sd: float | None = None) -> dict:
+    """Internal forces for a·DL + sd·SDL + b·LL (LL on every span) + u·(loads entered already factored);
+    sd = None -> same factor as DL."""
+    sd = a if sd is None else sd
+    fac = lambda case: {0: a, 1: b, 2: u, 3: sd}[case]
     spans = []
     for s in range(1, m.nS + 1):
         L = m.spans[s - 1].L
@@ -831,14 +850,14 @@ def combination(m: BeamModel, a: float, b: float, u: float = 0.0, ndiv: int = 80
                 xs |= {max(0.0, ld.a - 1e-6), min(L, ld.a + 1e-6)}
         xs = sorted(xs)
         f = lambda fn, x: (a * fn(0, s, x) + b * sum(fn(k, s, x) for k in range(1, m.nS + 1))
-                           + (u * fn(-1, s, x) if m.has_u else 0.0))
+                           + (u * fn(-1, s, x) if m.has_u else 0.0) + (sd * fn(-2, s, x) if m.has_sdl else 0.0))
         M = [f(m.M, x) for x in xs]
         V = [f(m.V, x) for x in xs]
         imax = max(range(len(M)), key=lambda i: M[i])
         # loads on this span, scaled by the factors
         udl = sum(fac(ld.case) * ld.w1 for ld in m.loads
                   if ld.span == s and ld.kind == 1 and ld.w1 == ld.w2 and ld.a <= 1e-9 and ld.b >= L - 1e-9)
-        merged = {}                          # DL + LL at the same place -> one load
+        merged = {}                          # DL + SDL + LL at the same place -> one load
         for ld in m.loads:
             if ld.span != s or (ld.kind == 1 and ld.w1 == ld.w2 and ld.a <= 1e-9 and ld.b >= L - 1e-9):
                 continue
@@ -855,6 +874,7 @@ def combination(m: BeamModel, a: float, b: float, u: float = 0.0, ndiv: int = 80
     for j in range(1, m.nS + 2):
         r = (a * m._node_sum(m.EV, m.ER, 0, j) + b * sum(m._node_sum(m.EV, m.ER, k, j)
                                                          for k in range(1, m.nS + 1))
-             + (u * m._node_sum(m.EV, m.ER, -1, j) if m.has_u else 0.0))
+             + (u * m._node_sum(m.EV, m.ER, -1, j) if m.has_u else 0.0)
+             + (sd * m._node_sum(m.EV, m.ER, -2, j) if m.has_sdl else 0.0))
         react.append(dict(node=j, X=m.X0[j - 1], kind=m.kind[j - 1], R=r))
-    return dict(spans=spans, reactions=react, a=a, b=b, u=u)
+    return dict(spans=spans, reactions=react, a=a, b=b, u=u, sd=sd)

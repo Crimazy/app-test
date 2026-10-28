@@ -2,11 +2,11 @@
 import pytest
 
 from beam_loads import (
-    AREA, LINE, POINT, SLAB, TRI, ExprError, evaluate, items_to_loads, loads_to_items, scale_item,
+    AREA, LINE, POINT, SLAB, TRI, ExprError, evaluate, items_to_loads, loads_to_items, migrate_item, scale_item,
     slab_tributary,
 )
 from continuous_beam import (
-    EXAMPLE_LOADS, EXAMPLE_NODES, EXAMPLE_SPANS, BeamModel, Load, Node, Settings, Span,
+    EXAMPLE_LOADS, EXAMPLE_NODES, EXAMPLE_SPANS, BeamModel, Load, Node, Settings, Span, combination,
 )
 
 
@@ -92,3 +92,62 @@ def test_unit_scaling_keeps_formulas():
     assert evaluate(it["DL"]) == pytest.approx(0.65 * 9.80665)
     assert evaluate(it["LL"]) == pytest.approx(0.15 * 9.80665)
     assert scale_item(dict(kind=SLAB, DL="150"), 9.8)["DL"] == "150"      # kg/m² unchanged
+
+
+# ---------------------------------------------------------------------------
+# SDL as a separate load case
+# ---------------------------------------------------------------------------
+def test_slab_sdl_separate_from_dl():
+    """Slab weight goes to DL, finishes to SDL; same total as the old 'DL = SDL' entry."""
+    sp = [Span(4.0, 25, 50)]
+    it = dict(span=1, kind=SLAB, S="4", L="4", t="12", SDL="150", LL="200")
+    loads, res, err = items_to_loads([it], sp)
+    assert not err
+    k = 4 / 3
+    by = {l.case: l.w1 for l in loads}
+    assert by["DL"] == pytest.approx(2400 * 0.12 * k / 1000)
+    assert by["SDL"] == pytest.approx(150 * k / 1000)
+    assert res[0]["SDL"] == pytest.approx(150 * k / 1000)
+
+
+def test_migrate_old_slab_item():
+    old = dict(span=1, kind=SLAB, S="4", t="12", DL="150", LL="200")
+    new = migrate_item(old)
+    assert new["SDL"] == "150" and new["DL"] == ""
+    wall = migrate_item(dict(span=1, kind=AREA, S="3", DL="180"))
+    assert wall["DL"] == "180" and wall["SDL"] == ""
+
+
+def _two_span(loads, **kw):
+    st = Settings(**kw)
+    return BeamModel(st, [Span(4, 25, 50), Span(5, 25, 50)], [Node("Pin")] * 3, loads)
+
+
+def test_sdl_same_factor_equals_dl():
+    a = _two_span([Load(1, "DL", "UDL", 1.0), Load(1, "SDL", "UDL", 0.5), Load(2, "LL", "UDL", 1.0)])
+    b = _two_span([Load(1, "DL", "UDL", 1.5), Load(2, "LL", "UDL", 1.0)])
+    for x in (0.0, 1.3, 4.0):
+        assert a.env_M(1, x) == pytest.approx(b.env_M(1, x))
+        assert a.env_V(1, x) == pytest.approx(b.env_V(1, x))
+    assert a.reactions()[1]["Ru_max"] == pytest.approx(b.reactions()[1]["Ru_max"])
+    assert a.reactions()[1]["RSD"] > 0 and b.reactions()[1]["RSD"] == 0
+
+
+def test_sdl_own_factor():
+    """Single span pin-pin, no pattern: Mmid = (fD wD + fSD wS) L^2/8 (self weight off),
+    but never below 1.4(DL + SDL)."""
+    loads = [Load(1, "DL", "UDL", 1.0), Load(1, "SDL", "UDL", 0.5)]
+    mk = lambda f: BeamModel(Settings(self_weight=False, pattern=False, load_factors=(1.2, 1.6), sdl_factor=f),
+                             [Span(6, 25, 50)], [Node("Pin"), Node("Pin")], loads)
+    assert mk(2.0).env_M(1, 3.0)[0] == pytest.approx((1.2 * 1.0 + 2.0 * 0.5) * 36 / 8)
+    assert mk(1.5).env_M(1, 3.0)[0] == pytest.approx(1.4 * 1.5 * 36 / 8)      # 1.4(DL + SDL) governs
+    m = mk(1.5)
+    c = combination(m, 1.0, 0.0, sd=0.0)                 # DL only
+    assert c["reactions"][0]["R"] == pytest.approx(3.0)
+    c = combination(m, 0.0, 0.0, sd=1.0)                 # SDL only
+    assert c["reactions"][0]["R"] == pytest.approx(1.5)
+
+
+def test_loads_to_items_keeps_sdl():
+    its = loads_to_items([Load(1, "DL", "UDL", 1.0), Load(1, "SDL", "UDL", 0.3)], [Span(4, 25, 50)])
+    assert len(its) == 1 and its[0]["DL"] == "1" and its[0]["SDL"] == "0.3"

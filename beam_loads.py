@@ -2,13 +2,14 @@
 
 Every span has a list of load items.  Each item has a type (slab, wall, line
 load, triangle, point), its geometry (S, L, a, b) and up to three load values.
-A slab item only needs the slab size and thickness: its weight (gamma_c x t +
-SDL), one-way / two-way type (L/S >= 2 -> one-way, or chosen) and the beam side
+A slab item only needs the slab size and thickness: its weight (gamma_c x t,
+case DL; finishes etc. go to SDL), one-way / two-way type (L/S >= 2 -> one-way, or chosen) and the beam side
 (short / long, from the beam span or chosen) give the load on the beam.
 Load values:
 
-  DL, LL : service (unfactored) dead / live load -> factored by the program
-           (pattern LL, selectable load combination)
+  DL, SDL, LL : service (unfactored) dead / superimposed dead / live load ->
+           factored by the program (pattern LL, selectable load combination;
+           SDL has its own factor, by default the DL factor)
   Wu     : already factored load, Excel style (e.g. 1.4*(...)+1.7*(...))
 
 Every value is a text that may be a formula, e.g. "2400*0.3+150" or
@@ -101,16 +102,27 @@ AREAL = {SLAB, AREA}
 SLAB_TYPES = ["อัตโนมัติ", "One-way", "Two-way"]
 SIDES = ["อัตโนมัติ", "ด้านสั้น", "ด้านยาว"]
 KIND_HELP = {
-    SLAB: ("S × L = ขนาดพื้น (m), t = หนา (cm), DL = SDL เพิ่ม (kg/m², เช่น 150), LL (kg/m²) → "
-           "w = 2400·t + SDL; One-way (L/S ≥ 2): คานด้านยาว w·S/2, คานด้านสั้น 0; "
+    SLAB: ("S × L = ขนาดพื้น (m), t = หนา (cm) → DL = 2400·t (นน.พื้น, + DL เพิ่มถ้ากรอก), "
+           "SDL = วัสดุปูผิว/ฝ้า/งานระบบ (kg/m², เช่น 150), LL (kg/m²); One-way (L/S ≥ 2): คานด้านยาว w·S/2, คานด้านสั้น 0; "
            "Two-way: ด้านสั้น w·S/3, ด้านยาว w·S/3·(3−m²)/2, m = S/L"),
-    AREA: "S = ความสูงผนัง หรือความกว้างรับน้ำหนัก (m); DL, LL เป็น kg/m² → w·S",
+    AREA: "S = ความสูงผนัง หรือความกว้างรับน้ำหนัก (m); DL, SDL, LL เป็น kg/m² → w·S",
     LINE: "ค่าเป็นน้ำหนักต่อเมตร (t/m หรือ kN/m ตามหน่วยที่เลือก)",
     TRI: "ใส่ค่าที่ปลาย a และปลาย b คั่นด้วย ; เช่น 0;0.5 (ต่อเมตร)",
     POINT: "ค่าเป็นแรง (t หรือ kN) กระทำที่ระยะ a จากปลายซ้ายของช่วง",
 }
-ITEM_FIELDS = ["span", "name", "kind", "S", "L", "t", "type", "side", "DL", "LL", "WU", "a", "b"]
-CASES = (("DL", "DL"), ("LL", "LL"), ("WU", "U"))
+ITEM_FIELDS = ["span", "name", "kind", "S", "L", "t", "type", "side", "DL", "SDL", "LL", "WU", "a", "b"]
+CASES = (("DL", "DL"), ("SDL", "SDL"), ("LL", "LL"), ("WU", "U"))
+LOAD_FIELDS = tuple(f for f, _ in CASES)
+
+
+def migrate_item(item: dict) -> dict:
+    """Items saved before SDL was a separate case: a slab's DL was its SDL."""
+    if "SDL" in item:
+        return item
+    new = dict(item, SDL="")
+    if item.get("kind") == SLAB:
+        new["SDL"], new["DL"] = item.get("DL") or "", ""
+    return new
 
 
 def _txt(v) -> str:
@@ -168,7 +180,7 @@ def areal_factor(kind: str, S: float | None) -> float:
 
 def item_loads(item: dict, span_L: float, U: float = 1.0, gc: float = 2.4) -> tuple[list[Load], dict]:
     """Loads (engine units, t / t-m) for one item and the per-case results in the
-    display unit {"DL": .., "LL": .., "WU": .., "unit": "/m" | "", "k": tributary m}.
+    display unit {"DL": .., "SDL": .., "LL": .., "WU": .., "unit": "/m" | "", "k": tributary m}.
     Raises ExprError for a bad entry."""
     kind = item.get("kind") or LINE
     sp = int(item.get("span") or 0)
@@ -202,7 +214,7 @@ def item_loads(item: dict, span_L: float, U: float = 1.0, gc: float = 2.4) -> tu
             continue
         v = evaluate(item.get(field))
         if field == "DL" and kind == SLAB and slab_w:
-            v = (v or 0.0) + slab_w                      # slab weight + SDL
+            v = (v or 0.0) + slab_w                      # slab weight (+ extra DL)
         if v is None:
             continue
         if kind in AREAL:
@@ -242,11 +254,11 @@ def items_to_loads(items: list[dict], spans: list, U: float = 1.0, gc: float = 2
 
 def loads_to_items(loads: list[Load], spans: list, U: float = 1.0) -> list[dict]:
     """Convert engine loads (example / imported workbook) into items, merging the
-    DL and LL parts that share the same geometry."""
+    DL, SDL and LL parts that share the same geometry."""
     rows: dict = {}
     for ld in loads:
         L = spans[ld.span - 1].L if 1 <= ld.span <= len(spans) else 0.0
-        field = {"DL": "DL", "LL": "LL", "U": "WU"}.get(ld.case.upper(), "DL")
+        field = {"DL": "DL", "SDL": "SDL", "LL": "LL", "U": "WU"}.get(ld.case.upper(), "DL")
         if ld.kind.upper() == "POINT":
             a = L / 2 if ld.a is None else ld.a
             key = (ld.span, POINT, round(a, 6), None)
@@ -274,7 +286,7 @@ def scale_item(item: dict, f: float) -> dict:
     if item.get("kind") in AREAL:
         return dict(item)
     new = dict(item)
-    for field in ("DL", "LL", "WU"):
+    for field in LOAD_FIELDS:
         s = _txt(item.get(field))
         if not s:
             continue
